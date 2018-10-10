@@ -1,0 +1,38 @@
+#!/bin/bash
+# Copyright (c) 2017 Western Digital Corporation or its affiliates. All rights reserved.
+#
+# Calls protoc with appropriate options.
+#
+# Use with go:generate like:
+#   //go:generate ../../tools/genproto
+# to process all .proto files in that package.
+
+set -e
+
+# Which gogoproto variant to use:
+variant=gogofast
+
+# Record which directory we were run from (the package being generated) and move
+# to the root of the repo:
+cwd=$(pwd)
+cd $(dirname $0)/..
+root=$(pwd)
+pkg=${cwd##${root}/}
+
+# Make sure we have protoc-gen-gogofast in the PATH:
+go install github.com/gogo/protobuf/protoc-gen-$variant
+PATH=$(go env GOPATH)/bin:$PATH
+
+# Get a directory for which the relative path "gogoproto/gogo.proto" works:
+gogo=$(dirname $(go list -f '{{.Dir}}' github.com/gogo/protobuf/gogoproto))
+
+# Get our module name:
+mod=$(sed -ne 's/^module //p' go.mod)
+
+# We have to use fake relative paths in the proto file imports so that protoc
+# can find them. Map them to the correct packages here:
+map="Mgogoproto/gogo.proto=github.com/gogo/protobuf/gogoproto"
+map="$map,Minternal/core/core.proto=$mod/internal/core"
+
+# Run protoc with all these args:
+protoc --proto_path=.:$gogo --${variant}_out=$map:. "$@" $pkg/*.proto

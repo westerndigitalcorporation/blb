@@ -1,0 +1,81 @@
+// Copyright (c) 2016 Western Digital Corporation or its affiliates. All rights reserved.
+// SPDX-License-Identifier: MIT
+
+syntax = "proto2";
+
+package statepb;
+
+// TODO: We'd like to write this:
+//import "github.com/gogo/protobuf/gogoproto/gogo.proto";
+//import "github.com/westerndigitalcorporation/blb/internal/core/core.proto";
+// but with go modules, there's no longer a directory for which those paths are
+// valid relative paths. So we import them like this instead:
+import "gogoproto/gogo.proto";
+import "internal/core/core.proto";
+// and do some hackery in genproto to make it work.
+
+option (gogoproto.goproto_unrecognized_all) = false;
+
+message Tract {
+  // Used for REPLICATED class.
+  repeated uint32 hosts = 1 [(gogoproto.casttype)="github.com/westerndigitalcorporation/blb/internal/core.TractserverID"];
+  optional uint32 version = 2 [(gogoproto.casttype)="int", (gogoproto.nullable)=false];
+
+  // Used for RS_X classes. The values here are always 10 bytes (80 bits).
+  // There must be exactly one of these for each RS_n_m enum value in
+  // core.StorageClass.
+  optional bytes rs63_chunk = 11;
+  optional bytes rs83_chunk = 12;
+  optional bytes rs103_chunk = 13;
+  optional bytes rs125_chunk = 14;
+}
+
+message Blob {
+  // Storage class for this blob (applies to all tracts).
+  optional core.StorageClass storage = 4 [default = REPLICATED];
+
+  // Client storage hint.
+  optional core.StorageHint hint = 5 [default = DEFAULT];
+
+  repeated Tract tracts = 1;
+  optional uint32 repl = 2; // for REPLICATED only
+
+  // Time that this blob was deleted, or zero if it is not deleted.
+  optional int64 deleted = 3 [default = 0];
+
+  // Time of last open for write.
+  optional int64 mtime = 10;
+
+  // Time of last open for read.
+  optional int64 atime = 11;
+
+  // Time that this blob can be automatically deleted, or zero if it is permanent.
+  optional int64 expires = 12 [default = 0];
+}
+
+message Partition {
+  optional uint32 id = 1;
+  optional uint32 next_blob_key = 2;
+  optional uint64 next_rs_chunk_key = 3; // 48 bits of "blob key" and "tract index" in one value
+}
+
+// RSChunk describes a coded set of some number of data tracts. For coding with
+// RS N,M (N data and M parity), there will be exactly N values in "data" and
+// N+M values in "hosts", the first N referring to the locations of the data
+// pieces and the following M referring to the locations of the parity pieces.
+// The number of real tracts within a data piece can be anything.
+// N and M are not encoded explicitly in RSChunk since they can be determined
+// from the lengths of data and hosts.
+message RSChunk {
+  message Data {
+    message Tract {
+      optional bytes id = 1 [(gogoproto.customtype)="github.com/westerndigitalcorporation/blb/internal/core.TractID",
+                             (gogoproto.nullable)=false]; // tract id (10 bytes)
+      optional uint32 length = 2 [(gogoproto.nullable)=false]; // length of tract data
+      optional uint32 offset = 3 [(gogoproto.nullable)=false]; // offset within this piece
+    }
+    repeated Tract tracts = 1; // any number of values
+  }
+  repeated Data data = 1; // exactly N values
+  repeated uint32 hosts = 2 [(gogoproto.casttype)="github.com/westerndigitalcorporation/blb/internal/core.TractserverID"]; // exactly N+M values
+}
