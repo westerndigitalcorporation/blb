@@ -1,17 +1,14 @@
-
-BLB
-===
+# Blb
 
 Blb is a distributed object storage system. It's designed for use on bare metal
 in cluster computing environments.
 
 It's implemented in Go. The API is a client library, also implemented in Go,
 that exposes objects with an interface similar to Go files
-(`io.ReadWriteSeeker`).
+([`io.ReadWriteSeeker`](https://github.com/golang/go/blob/master/src/io/io.go)).
 
 
-Design Philosophy
----
+## Design Philosophy
 
 Blb was designed with the following ideals in mind, in roughly this priority:
 
@@ -22,8 +19,7 @@ Blb was designed with the following ideals in mind, in roughly this priority:
   commodity hardware
 
 
-Architecture Overview
----
+## Architecture Overview
 
 Blb borrows many ideas from other storage systems, most prominently Google's GFS
 and Colossus, and Microsoft's FDS.
@@ -113,10 +109,9 @@ and not bother ops staff. With proper configuration, it can even replace members
 of Raft groups automatically.
 
 
-Building and running
----
+## Building and running
 
-Blb uses the new Go module system as a build system, so you'll need Go 1.10 or
+Blb uses the new Go module system as a build system, so you'll need Go 1.11 or
 later.
 
 ```
@@ -206,18 +201,16 @@ interface is HTTP over an unix socket. Details are in
 `internal/tractserver/disk_controller.go`.
 
 
-History
----
+## History
 
-Blb was originally developed at Upthere (a cloud storage service) as the
+Blb was originally developed at [Upthere](https://upthere.com/) (a cloud storage service) as the
 intended storage system for most of our bulk data. It ran in production for
 several months, although not as the sole storage system. In September 2017,
-Upthere was acquired by Western Digital, and it was decided to pause development
+Upthere was acquired by [Western Digital](https://www.westerndigital.com/), and it was decided to pause development
 on Blb and move data to other storage systems.
 
 
-Future and contribution
----
+## Future and contribution
 
 Although Blb is not being actively developed as a production system, its authors
 plan to continue improving the system in their spare time as an educational
