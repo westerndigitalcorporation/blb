@@ -2,11 +2,11 @@
 BLB
 ===
 
-Blb is a distributed object storage system. It's designed for use on bare metal
-in cluster computing environments.
+Blb is a distributed object storage system designed for use on bare metal with
+spinning disks in cluster computing environments.
 
-It's implemented in Go. The API is a client library, also implemented in Go,
-that exposes objects with an interface similar to Go files
+It's implemented in Go. The developer-facing API is a client library, also
+implemented in Go, that exposes objects with an interface similar to Go files
 (`io.ReadWriteSeeker`).
 
 
@@ -26,7 +26,8 @@ Architecture Overview
 ---
 
 Blb borrows many ideas from other storage systems, most prominently Google's GFS
-and Colossus, and Microsoft's FDS.
+and Colossus, and Microsoft's FDS. There are also some similarities to Dropbox's
+Magic Pocket.
 
 As in similar systems, blobs are divided into fixed-size "tracts" of 8MB. Tracts
 are spread across storage nodes in the cluster. Each storage node runs a
@@ -43,10 +44,14 @@ protocol to guarantee consistency of updates across replicas.
 Objects (also called blobs) are identified with a fixed-length numeric ID
 (currently 64 bits, but will probably move to 128). Objects are assigned to
 curators by a mapping from the upper bits of their ID, called the partition.
-That mapping is stored in another set of metadata servers, called the masters.
-The masters also use Raft to keep that mapping consistent.
 
-Blb clusters should be scalable almost indefinitely by adding more curators.
+The partition-to-curator mapping is stored in another set of metadata servers,
+called "masters". The masters also use Raft to keep that mapping consistent.
+Currently partitions cannot be migrated from one curator to another.
+
+This basic design is expected to scale to very large clusters just by adding
+more curators. (Although the implementation certainly has various bottlenecks
+that will need to be addressed before that point.)
 
 To manipulate an object, the client library talks with the masters, curators,
 and tractservers. Some metadata can be cached to reduce the number of
@@ -116,7 +121,7 @@ of Raft groups automatically.
 Building and running
 ---
 
-Blb uses the new Go module system as a build system, so you'll need Go 1.10 or
+Blb uses the new Go module system as a build system, so you'll need Go 1.11 or
 later.
 
 ```
@@ -209,11 +214,14 @@ interface is HTTP over an unix socket. Details are in
 History
 ---
 
-Blb was originally developed at Upthere (a cloud storage service) as the
+Blb was originally developed at [Upthere][ut] (a cloud storage service) as the
 intended storage system for most of our bulk data. It ran in production for
 several months, although not as the sole storage system. In September 2017,
-Upthere was acquired by Western Digital, and it was decided to pause development
-on Blb and move data to other storage systems.
+Upthere was acquired by [Western Digital][wd], and it was decided to pause
+development on Blb and move data to other storage systems.
+
+[ut]: https://upthere.com/
+[wd]: https://www.westerndigital.com/
 
 
 Future and contribution
@@ -237,7 +245,11 @@ Some projects we'd like to work on:
   while still waiting for a read.
 * Harden the Raft implementation.
 * Rebalance data onto new tractservers.
-* Use the FileSets algorithm to choose replica sets.
-* Use raw disks (CMR and SMR).
+* Rebalance partitions among curators.
+* Use the [CopySets][cs] algorithm to choose replica sets instead of randomly.
+* Use raw disks (CMR and SMR), possibly in conjunction with SSDs for buffering
+  writes and caching reads.
 * Using a fancier erasure coding scheme that allows cheaper/faster recovery.
+
+[cs]: https://www.usenix.org/conference/atc13/technical-sessions/presentation/cidon
 
