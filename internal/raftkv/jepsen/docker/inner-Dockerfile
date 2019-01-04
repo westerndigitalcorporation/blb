@@ -1,0 +1,17 @@
+# Copyright (c) 2015 Western Digital Corporation or its affiliates.  All rights reserved.
+# SPDX-License-Identifier: MIT
+
+FROM tutum/debian:jessie
+
+# Initial setup
+RUN rm /etc/apt/apt.conf.d/docker-clean
+
+# Install other dependencies and remove systemd
+RUN apt-get update && apt-get install -qqy \
+      git net-tools rsyslog wget sysvinit-core sysvinit sysvinit-utils curl \
+      vim man faketime unzip iptables iputils-ping logrotate sudo && \
+    apt-get remove -y --purge --auto-remove systemd && \
+    rm -rf /var/lib/apt/lists/*
+
+# Add our binary
+ADD ./raftkv /bin/raftkv
