@@ -1115,6 +1115,9 @@ func (cli *Client) readOneTractReplicated(
 
 	order := rand.Perm(len(tract.Hosts))
 
+	// Generate a request ID to use for cancelling alternate requests.
+	reqID := core.GenRequestID()
+
 	err := core.ErrAllocHost // default error if none present
 	for _, n := range order {
 		host := tract.Hosts[n]
@@ -1124,7 +1127,7 @@ func (cli *Client) readOneTractReplicated(
 		}
 
 		var read int
-		read, err = cli.tractservers.ReadInto(ctx, host, tract.Tract, tract.Version, thisB, thisOffset)
+		read, err = cli.tractservers.ReadInto(ctx, host, reqID, tract.Tract, tract.Version, thisB, thisOffset, candidateHosts)
 		if err == core.ErrVersionMismatch {
 			badVersionHost = host
 		}
@@ -1166,7 +1169,8 @@ func (cli *Client) readOneTractRS(
 	rsTract := tract.RS.Chunk.ToTractID()
 	length := min(len(thisB), int(tract.RS.Length))
 	offset := int64(tract.RS.Offset) + thisOffset
-	read, err := cli.tractservers.ReadInto(ctx, tract.RS.Host, rsTract, core.RSChunkVersion, thisB[:length], offset)
+	reqID := core.GenRequestID()
+	read, err := cli.tractservers.ReadInto(ctx, tract.RS.Host, reqID, rsTract, core.RSChunkVersion, thisB[:length], offset)
 
 	if err != core.NoError && err != core.ErrEOF {
 		log.V(1).Infof("rs read %s from tractserver at address %s: %s", tract.Tract, tract.RS.Host, err)

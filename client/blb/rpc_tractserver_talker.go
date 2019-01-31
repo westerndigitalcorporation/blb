@@ -5,6 +5,7 @@ package blb
 
 import (
 	"context"
+
 	log "github.com/golang/glog"
 
 	"github.com/westerndigitalcorporation/blb/internal/core"
@@ -79,15 +80,14 @@ func (r *RPCTractserverTalker) Read(ctx context.Context, addr string, id core.Tr
 }
 
 // ReadInto reads from a tract into a provided slice without copying.
-func (r *RPCTractserverTalker) ReadInto(ctx context.Context, addr string, id core.TractID, version int, b []byte, off int64) (int, core.Error) {
+func (r *RPCTractserverTalker) ReadInto(ctx context.Context, addr, reqID string, id core.TractID, version int, b []byte, off int64) (int, core.Error) {
 	pri := priorityFromContext(ctx)
-	rpcid := rpc.GenID()
-	req := core.ReadReq{ID: id, Version: version, Len: len(b), Off: off, Pri: pri, ReqID: rpcid}
+	req := core.ReadReq{ID: id, Version: version, Len: len(b), Off: off, Pri: pri, ReqID: reqID}
 	// Gob will decode into a provided slice if there's enough capacity. Give it b,
 	// but reset the cap to len so it can't go past our segment.
 	var reply core.ReadReply
 	reply.Set(b[0:0:len(b)], false)
-	cancel := rpc.CancelAction{Method: core.CancelReqMethod, Req: rpcid}
+	cancel := rpc.CancelAction{Method: core.CancelReqMethod, Req: reqID}
 	if err := r.cc.SendWithCancel(ctx, addr, core.ReadMethod, req, &reply, &cancel); err != nil {
 		log.Errorf("Read RPC error for tract (id: %s, version: %d, length: %d, offset: %d) on tractserver @%s: %s", id, version, len(b), off, addr, err)
 		return 0, core.ErrRPC
