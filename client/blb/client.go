@@ -1126,7 +1126,10 @@ func (cli *Client) readOneTractReplicated(
 			continue
 		}
 
-		otherHosts := tract.Hosts
+		// Compute alternate hosts that will receive backup requests. Pass them along
+		// to the tracserver rpc layer to enable cancellation messages to be sent between
+		// servers.
+		otherHosts := cutSlice(tract.Hosts, n)
 
 		var read int
 		read, err = cli.tractservers.ReadInto(ctx, host, otherHosts, reqID, tract.Tract, tract.Version, thisB, thisOffset)
@@ -1437,4 +1440,11 @@ func priorityFromContext(ctx context.Context) core.Priority {
 		return pri
 	}
 	return core.Priority_TSDEFAULT
+}
+
+func cutSlice(s []string, i int) []string {
+	r := make([]string, len(s))
+	copy(r, s)
+	r[i], r[len(r)-1] = r[len(r)-1], r[i]
+	return r[:len(r)-1]
 }

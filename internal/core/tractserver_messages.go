@@ -228,9 +228,8 @@ type ReadReq struct {
 	// ID for cancellation.
 	ReqID string
 
-	// Other replicas that can serve the read for backup requets
-	// how about the other ReqIDs?
-	ReplicaHosts []string
+	// Other replicas that can serve alternate reads.
+	OtherHosts []string
 }
 
 // ReadReply is the reply for ReadReq.
