@@ -80,7 +80,7 @@ func (r *RPCTractserverTalker) Read(ctx context.Context, addr string, id core.Tr
 }
 
 // ReadInto reads from a tract into a provided slice without copying.
-func (r *RPCTractserverTalker) ReadInto(ctx context.Context, addr, reqID string, id core.TractID, version int, b []byte, off int64) (int, core.Error) {
+func (r *RPCTractserverTalker) ReadInto(ctx context.Context, addr string, otherHosts []string, reqID string, id core.TractID, version int, b []byte, off int64) (int, core.Error) {
 	pri := priorityFromContext(ctx)
 	req := core.ReadReq{ID: id, Version: version, Len: len(b), Off: off, Pri: pri, ReqID: reqID}
 	// Gob will decode into a provided slice if there's enough capacity. Give it b,

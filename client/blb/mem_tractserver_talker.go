@@ -5,8 +5,9 @@ package blb
 
 import (
 	"context"
-	"github.com/westerndigitalcorporation/blb/internal/core"
 	"sync"
+
+	"github.com/westerndigitalcorporation/blb/internal/core"
 )
 
 // A tsTraceEntry contains the args for a read or write on a tractserver (but
@@ -123,7 +124,7 @@ func copySlice(b []byte) []byte {
 }
 
 // ReadInto reads from a given tract.
-func (tt *memTractserverTalker) ReadInto(ctx context.Context, addr string, id core.TractID, version int, b []byte, off int64) (int, core.Error) {
+func (tt *memTractserverTalker) ReadInto(ctx context.Context, addr string, otherHosts []string, reqID string, id core.TractID, version int, b []byte, off int64) (int, core.Error) {
 	r, err := tt.Read(ctx, addr, id, version, len(b), off)
 	return copy(b, r), err
 }

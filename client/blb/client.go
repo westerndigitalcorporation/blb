@@ -1126,8 +1126,10 @@ func (cli *Client) readOneTractReplicated(
 			continue
 		}
 
+		otherHosts := tract.Hosts
+
 		var read int
-		read, err = cli.tractservers.ReadInto(ctx, host, reqID, tract.Tract, tract.Version, thisB, thisOffset, candidateHosts)
+		read, err = cli.tractservers.ReadInto(ctx, host, otherHosts, reqID, tract.Tract, tract.Version, thisB, thisOffset)
 		if err == core.ErrVersionMismatch {
 			badVersionHost = host
 		}
@@ -1170,7 +1172,7 @@ func (cli *Client) readOneTractRS(
 	length := min(len(thisB), int(tract.RS.Length))
 	offset := int64(tract.RS.Offset) + thisOffset
 	reqID := core.GenRequestID()
-	read, err := cli.tractservers.ReadInto(ctx, tract.RS.Host, reqID, rsTract, core.RSChunkVersion, thisB[:length], offset)
+	read, err := cli.tractservers.ReadInto(ctx, tract.RS.Host, nil, reqID, rsTract, core.RSChunkVersion, thisB[:length], offset)
 
 	if err != core.NoError && err != core.ErrEOF {
 		log.V(1).Infof("rs read %s from tractserver at address %s: %s", tract.Tract, tract.RS.Host, err)

@@ -16,7 +16,7 @@ var (
 
 func makePrefix() string {
 	buf := make([]byte, 15)
-	rand.Buf(buf)
+	rand.Read(buf)
 	return base64.StdEncoding.EncodeToString(buf)
 }
 
