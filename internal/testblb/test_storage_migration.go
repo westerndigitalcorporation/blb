@@ -59,7 +59,7 @@ func (tc *TestCase) TestStorageMigration() error {
 		waitFor = nil
 		for _, b := range blobs {
 			bi, _ := b.Stat()
-			if bi.Class == core.StorageClass_RS_6_3 {
+			if bi.Class == core.StorageClassRS_6_3 {
 				migrated++
 				// Wait for each replica of each tract to be GC-ed
 				for tk := 0; tk < bi.NumTracts; tk++ {

@@ -4,7 +4,6 @@
 package core
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -274,30 +273,6 @@ func (t TractID) IsRegular() bool {
 // IsRS returns true if t represents an RS chunk piece.
 func (t TractID) IsRS() bool {
 	return t.Blob.Partition().Type() == RSPartition
-}
-
-// For automatic marshaling in protocol buffers:
-
-// Size returns the marshaled size of a tract id.
-func (t TractID) Size() int {
-	return 10
-}
-
-// MarshalTo writes this tract id to the given slice.
-func (t TractID) MarshalTo(out []byte) (n int, err error) {
-	binary.BigEndian.PutUint64(out[0:8], uint64(t.Blob))
-	binary.BigEndian.PutUint16(out[8:10], uint16(t.Index))
-	return 10, nil
-}
-
-// Unmarshal sets this tract id from the given slice.
-func (t *TractID) Unmarshal(in []byte) error {
-	if len(in) != 10 {
-		return ErrInvalidID
-	}
-	t.Blob = BlobID(binary.BigEndian.Uint64(in[0:8]))
-	t.Index = TractKey(binary.BigEndian.Uint16(in[8:10]))
-	return nil
 }
 
 //-----------------

@@ -16,7 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"github.com/westerndigitalcorporation/blb/internal/core"
-	pb "github.com/westerndigitalcorporation/blb/internal/curator/durable/state/statepb"
+	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state/fb"
 )
 
 const (
@@ -261,7 +261,7 @@ func (r *recovery) pruneDeletedUnrecoverable() {
 	}
 }
 
-func (r *recovery) pruneCorruptTractSet(id core.TractID, t *pb.Tract) {
+func (r *recovery) pruneCorruptTractSet(id core.TractID, t *fb.TractF) {
 	// If "corrupt" has tsids that aren't in this tract's replicated set
 	// anymore, then we can remove them.
 	set, ok := r.corrupt[id]
@@ -274,12 +274,12 @@ func (r *recovery) pruneCorruptTractSet(id core.TractID, t *pb.Tract) {
 
 	l := set.Len()
 	for i := 0; i < l; i++ {
-		if !contains(t.Hosts, set.Get(i)) {
+		if !fb.HostsContains(t, set.Get(i)) {
 			// If any are missing, recreate corrupt set excluding unknown ids.
 			var newSet TSIDSet
 			for i = 0; i < l; i++ {
 				tsid := set.Get(i)
-				if contains(t.Hosts, tsid) {
+				if fb.HostsContains(t, tsid) {
 					newSet = newSet.Add(tsid)
 				}
 			}
@@ -294,22 +294,23 @@ func (r *recovery) pruneCorruptTractSet(id core.TractID, t *pb.Tract) {
 	}
 }
 
-func (r *recovery) eachTract(id core.TractID, t *pb.Tract) {
+func (r *recovery) eachTract(id core.TractID, t *fb.TractF) {
 	r.pruneCorruptTractSet(id, t)
 	task, hash, unrec := r.tractTask(id, t)
 	r.syncTask(id, task, hash, unrec)
 }
 
-func (r *recovery) tractTask(id core.TractID, t *pb.Tract) (task, uint64, bool) {
+func (r *recovery) tractTask(id core.TractID, t *fb.TractF) (task, uint64, bool) {
 	h := fnv.New64a()
 
-	if len(t.Hosts) == 0 {
+	if t.HostsLength() == 0 {
 		return nil, 0, false // Not replicated
 	}
 
 	var badTs TSIDSet
 	blocking := int8(0)
-	for _, ts := range t.Hosts {
+	for i := 0; i < t.HostsLength(); i++ {
+		ts := core.TractserverID(t.Hosts(i))
 		bad := false
 		if _, ok := r.status.down[ts]; ok {
 			bad = true
@@ -330,9 +331,9 @@ func (r *recovery) tractTask(id core.TractID, t *pb.Tract) (task, uint64, bool) 
 	if l := badTs.Len(); l == 0 {
 		// The hopefully-common case of a healthy repl set for a tract.
 		return nil, 0, false
-	} else if l == len(t.Hosts) {
+	} else if l == t.HostsLength() {
 		// The hopefully-never case of possibly lost data.
-		log.Errorf("all %d copies of tract %s are bad; CANNOT REREPLICATE", len(t.Hosts), id)
+		log.Errorf("all %d copies of tract %s are bad; CANNOT REREPLICATE", t.HostsLength(), id)
 		return nil, 0, true
 	}
 
@@ -340,14 +341,15 @@ func (r *recovery) tractTask(id core.TractID, t *pb.Tract) (task, uint64, bool) 
 
 	return &replTask{
 		id:       id,
-		factor:   int8(len(t.Hosts)),
+		factor:   int8(t.HostsLength()),
 		blocking: blocking,
 		badTs:    badTs,
 	}, h.Sum64(), false
 }
 
-func (r *recovery) pruneCorruptChunkSet(baseID core.RSChunkID, c *pb.RSChunk) {
-	for idx, expectedTSID := range c.Hosts {
+func (r *recovery) pruneCorruptChunkSet(baseID core.RSChunkID, c *fb.RSChunkF) {
+	for idx := 0; idx < c.HostsLength(); idx++ {
+		expectedTSID := core.TractserverID(c.Hosts(idx))
 		id := baseID.Add(idx).ToTractID()
 
 		// If "corrupt" has tsids that aren't supposed to hold this piece
@@ -371,20 +373,21 @@ func (r *recovery) pruneCorruptChunkSet(baseID core.RSChunkID, c *pb.RSChunk) {
 	}
 }
 
-func (r *recovery) eachChunk(id core.RSChunkID, c *pb.RSChunk) {
+func (r *recovery) eachChunk(id core.RSChunkID, c *fb.RSChunkF) {
 	r.pruneCorruptChunkSet(id, c)
 	task, hash, unrec := r.chunkTask(id, c)
 	r.syncTask(id.ToTractID(), task, hash, unrec)
 }
 
-func (r *recovery) chunkTask(baseID core.RSChunkID, c *pb.RSChunk) (task, uint64, bool) {
+func (r *recovery) chunkTask(baseID core.RSChunkID, c *fb.RSChunkF) (task, uint64, bool) {
 	h := fnv.New64a()
-	n := len(c.Data)
-	m := len(c.Hosts) - n
+	n := c.DataLength()
+	m := c.HostsLength() - n
 
 	var badTs TSIDSet
 	blocking := int8(0)
-	for idx, ts := range c.Hosts {
+	for idx := 0; idx < c.HostsLength(); idx++ {
+		ts := core.TractserverID(c.Hosts(idx))
 		tid := baseID.Add(idx).ToTractID()
 		bad := false
 		if _, ok := r.status.down[ts]; ok {

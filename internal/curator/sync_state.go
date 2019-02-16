@@ -8,7 +8,7 @@ import (
 
 	log "github.com/golang/glog"
 	"github.com/westerndigitalcorporation/blb/internal/core"
-	pb "github.com/westerndigitalcorporation/blb/internal/curator/durable/state/statepb"
+	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state/fb"
 )
 
 const (
@@ -70,9 +70,10 @@ func (c *Curator) checkTracts() core.Error {
 	// across tractservers.
 	nChecks := 0
 
-	addTracts := func(id core.TractID, tract *pb.Tract) {
-		ts := core.TractState{ID: id, Version: tract.Version}
-		for _, host := range tract.Hosts {
+	addTracts := func(id core.TractID, tract *fb.TractF) {
+		ts := core.TractState{ID: id, Version: int(tract.Version())}
+		for i := 0; i < tract.HostsLength(); i++ {
+			host := core.TractserverID(tract.Hosts(i))
 			// Only check for tract servers that are marked as healthy.
 			if have, ok := checks[host]; ok {
 				checks[host] = append(have, ts)
@@ -81,8 +82,9 @@ func (c *Curator) checkTracts() core.Error {
 		}
 	}
 
-	addPieces := func(baseID core.RSChunkID, tract *pb.RSChunk) {
-		for i, host := range tract.Hosts {
+	addPieces := func(baseID core.RSChunkID, tract *fb.RSChunkF) {
+		for i := 0; i < tract.HostsLength(); i++ {
+			host := core.TractserverID(tract.Hosts(i))
 			ts := core.TractState{ID: baseID.Add(i).ToTractID(), Version: core.RSChunkVersion}
 			// Only check for tract servers that are marked as healthy.
 			if have, ok := checks[host]; ok {

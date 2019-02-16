@@ -180,14 +180,6 @@ type ChangeTractCommand struct {
 	NewHosts []core.TractserverID
 }
 
-// ChangeTractResult is the result of a ChangeTractCommand
-type ChangeTractResult struct {
-	Err core.Error
-
-	// Only meaningful if there was no error.
-	Info core.TractInfo
-}
-
 // UpdateTimesCommand asks the curator to update blob mtimes/atimes in a batch.
 type UpdateTimesCommand struct {
 	Updates []state.UpdateTime

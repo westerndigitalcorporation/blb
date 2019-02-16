@@ -11,7 +11,7 @@ import (
 	log "github.com/golang/glog"
 	"github.com/westerndigitalcorporation/blb/internal/core"
 	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state"
-	pb "github.com/westerndigitalcorporation/blb/internal/curator/durable/state/statepb"
+	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state/fb"
 	"github.com/westerndigitalcorporation/blb/pkg/raft/raft"
 )
 
@@ -197,7 +197,7 @@ func (h *StateHandler) GetCuratorInfoLocal() (id core.CuratorID, partitionIDs []
 	partitions := txn.GetPartitions()
 	partitionIDs = make([]core.PartitionID, len(partitions))
 	for i, p := range partitions {
-		partitionIDs[i] = core.PartitionID(p.GetId())
+		partitionIDs[i] = core.PartitionID(p.Id())
 	}
 	return
 }
@@ -430,38 +430,38 @@ func (h *StateHandler) SetMetadata(id core.BlobID, md core.BlobInfo) core.Error 
 func (h *StateHandler) GetTracts(id core.BlobID, start, end int) ([]core.TractInfo, core.StorageClass, core.Error) {
 	txn, err := h.LinearizableReadOnlyTxn()
 	if err != core.NoError {
-		return nil, core.StorageClass_REPLICATED, err
+		return nil, core.StorageClassREPLICATED, err
 	}
 	defer txn.Commit()
 	return txn.GetTracts(id, start, end)
 }
 
 // ChangeTract changes the repl group of a tract.
-func (h *StateHandler) ChangeTract(id core.TractID, newVersion int, hosts []core.TractserverID, term uint64) (core.TractInfo, core.Error) {
+func (h *StateHandler) ChangeTract(id core.TractID, newVersion int, hosts []core.TractserverID, term uint64) core.Error {
 	pending := h.raft.ProposeIfTerm(cmdToBytes(ChangeTractCommand{id, newVersion, hosts}), term)
 
 	select {
 	case <-time.After(core.ProposalTimeout):
-		return core.TractInfo{}, core.ErrRaftTimeout
+		return core.ErrRaftTimeout
 	case <-pending.Done:
 		// Fall through
 	}
 
 	if pending.Err != nil {
-		return core.TractInfo{}, core.FromRaftError(pending.Err)
+		return core.FromRaftError(pending.Err)
 	}
 	if err, ok := pending.Res.(core.Error); ok {
-		return core.TractInfo{}, err
+		return err
 	}
 
-	res := pending.Res.(ChangeTractResult)
+	err := pending.Res.(core.Error)
 	// If the command was actually applied it shouldn't error.  If it does there's a programming
 	// error and we should abort.
-	if res.Err != core.NoError {
-		log.Fatalf("change tract command applied unsuccessfully: %+v", res)
+	if err != core.NoError {
+		log.Fatalf("change tract command applied unsuccessfully: %s", err)
 	}
 
-	return res.Info, res.Err
+	return err
 }
 
 // UpdateTimes applies a batch of time updates to the state.
@@ -489,7 +489,7 @@ func (h *StateHandler) Stat(id core.BlobID) (core.BlobInfo, core.Error) {
 }
 
 // GetRSChunk looks up one RSChunk.
-func (h *StateHandler) GetRSChunk(id core.RSChunkID) *pb.RSChunk {
+func (h *StateHandler) GetRSChunk(id core.RSChunkID) *fb.RSChunkF {
 	txn, err := h.LinearizableReadOnlyTxn()
 	if err != core.NoError {
 		return nil
@@ -514,7 +514,7 @@ func (h *StateHandler) ListBlobs(partition core.PartitionID, start core.BlobKey)
 			// we're at the end of this partition
 			break
 		}
-		if blob.GetDeleted() == 0 { // ignore deleted blobs
+		if blob.Deleted() == 0 { // ignore deleted blobs
 			keys = append(keys, id.ID())
 		}
 		has = iter.Next()
@@ -627,7 +627,7 @@ func (h *StateHandler) GetKnownTSIDs() ([]core.TractserverID, core.Error) {
 // iteration is aborted.
 func (h *StateHandler) ForEachBlob(
 	includeDeleted bool,
-	bfunc func(core.BlobID, *pb.Blob),
+	bfunc func(core.BlobID, *fb.BlobF),
 	inBetween func() bool) {
 
 	var nextBlob core.BlobID
@@ -636,7 +636,7 @@ func (h *StateHandler) ForEachBlob(
 		iter, has := txn.GetIterator(nextBlob)
 		for n := blobsPerTxn; has && n > 0; n-- {
 			id, blob := iter.Blob()
-			if includeDeleted || blob.GetDeleted() == 0 {
+			if includeDeleted || blob.Deleted() == 0 {
 				bfunc(id, blob)
 			}
 			nextBlob = id.Next()
@@ -653,17 +653,19 @@ func (h *StateHandler) ForEachBlob(
 
 // ForEachTract calls the given function for each tract in non-deleted blobs.
 // inBetween is as in ForEachBlob.
-func (h *StateHandler) ForEachTract(tfunc func(core.TractID, *pb.Tract), inBetween func() bool) {
-	h.ForEachBlob(false, func(id core.BlobID, blob *pb.Blob) {
-		for i, tract := range blob.Tracts {
-			tfunc(core.TractID{Blob: id, Index: core.TractKey(i)}, tract)
+func (h *StateHandler) ForEachTract(tfunc func(core.TractID, *fb.TractF), inBetween func() bool) {
+	var tract fb.TractF
+	h.ForEachBlob(false, func(id core.BlobID, blob *fb.BlobF) {
+		for i := 0; i < blob.TractsLength(); i++ {
+			blob.Tracts(&tract, i)
+			tfunc(core.TractID{Blob: id, Index: core.TractKey(i)}, &tract)
 		}
 	}, inBetween)
 }
 
 // ForEachRSChunk calls the given function for each RSChunk in the database.
 // inBetween is as in ForEachBlob.
-func (h *StateHandler) ForEachRSChunk(cfunc func(core.RSChunkID, *pb.RSChunk), inBetween func() bool) {
+func (h *StateHandler) ForEachRSChunk(cfunc func(core.RSChunkID, *fb.RSChunkF), inBetween func() bool) {
 	var nextChunk core.RSChunkID
 	for done := false; !done; {
 		txn := h.LocalReadOnlyTxn()
@@ -725,7 +727,7 @@ func (h *StateHandler) GetFreeSpaceLocal() uint64 {
 
 	var free uint64
 	for _, p := range txn.GetPartitions() {
-		free += core.MaxBlobKey - uint64(p.GetNextBlobKey())
+		free += core.MaxBlobKey - uint64(p.NextBlobKey())
 	}
 	return free
 }
@@ -761,19 +763,14 @@ func (h *StateHandler) CheckForGarbage(tsid core.TractserverID, tracts []core.Tr
 			// We're possibly creating it right now, or the tract only exists because of a failed create attempt.
 			// Either way, we don't GC it -- it's simpler to assume it's being actively created, and if it was a
 			// failed create attempt, we assume the attempt will eventually succeed.
-			if id.Index >= core.TractKey(len(blob.Tracts)) {
+			if int(id.Index) >= blob.TractsLength() {
 				continue
 			}
 
 			// See if the set of hosts includes the host that reports having a copy of the tract.
-			t := blob.Tracts[id.Index]
-			contains := false
-			for i := range t.Hosts {
-				if t.Hosts[i] == tsid {
-					contains = true
-					break
-				}
-			}
+			var t fb.TractF
+			blob.Tracts(&t, int(id.Index))
+			contains := fb.HostsContains(&t, tsid)
 
 			// If not, we can tell the host to GC it.
 			if !contains {
@@ -783,7 +780,7 @@ func (h *StateHandler) CheckForGarbage(tsid core.TractserverID, tracts []core.Tr
 				// just examined the replicas of this version.
 				//
 				// If it has a lower version, it can delete the tract.
-				old = append(old, core.TractState{ID: id, Version: t.Version})
+				old = append(old, core.TractState{ID: id, Version: int(t.Version())})
 			}
 		} else if id.IsRS() {
 			// Look up the RS chunk piece.

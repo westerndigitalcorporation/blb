@@ -10,10 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/protobuf/proto"
-
 	"github.com/westerndigitalcorporation/blb/internal/core"
-	pb "github.com/westerndigitalcorporation/blb/internal/curator/durable/state/statepb"
+	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state/fb"
 	test "github.com/westerndigitalcorporation/blb/pkg/testutil"
 )
 
@@ -40,16 +38,16 @@ func TestStateBasics(t *testing.T) {
 	}
 
 	// Create two partitions.
-	txn.PutPartition(&pb.Partition{Id: proto.Uint32(1)})
-	txn.PutPartition(&pb.Partition{Id: proto.Uint32(3)})
+	txn.PutPartition(&fb.Partition{Id: 1})
+	txn.PutPartition(&fb.Partition{Id: 3})
 
 	// Create two blobs in partition 1.
-	txn.PutBlob(core.BlobIDFromParts(1, 1), &pb.Blob{Repl: proto.Uint32(3)})
-	txn.PutBlob(core.BlobIDFromParts(1, 2), &pb.Blob{Repl: proto.Uint32(3)})
+	txn.PutBlob(core.BlobIDFromParts(1, 1), &fb.Blob{Repl: 3})
+	txn.PutBlob(core.BlobIDFromParts(1, 2), &fb.Blob{Repl: 3})
 
 	// Create two blobs in partition 3.
-	txn.PutBlob(core.BlobIDFromParts(3, 1), &pb.Blob{Repl: proto.Uint32(3)})
-	txn.PutBlob(core.BlobIDFromParts(3, 2), &pb.Blob{Repl: proto.Uint32(3)})
+	txn.PutBlob(core.BlobIDFromParts(3, 1), &fb.Blob{Repl: 3})
+	txn.PutBlob(core.BlobIDFromParts(3, 2), &fb.Blob{Repl: 3})
 
 	id11 := core.BlobIDFromParts(1, 1)
 
@@ -58,7 +56,7 @@ func TestStateBasics(t *testing.T) {
 	if len(partitions) != 2 {
 		t.Fatalf("expected to get two partitions")
 	}
-	if partitions[0].GetId() != 1 || partitions[1].GetId() != 3 {
+	if partitions[0].Id() != 1 || partitions[1].Id() != 3 {
 		t.Fatalf("unexpected partition IDs returned")
 	}
 	if txn.GetPartition(3) == nil {
@@ -101,13 +99,13 @@ func TestStateBlobIterator(t *testing.T) {
 	txn := s.WriteTxn(1)
 
 	// Create two partitions.
-	txn.PutPartition(&pb.Partition{Id: proto.Uint32(1)})
-	txn.PutPartition(&pb.Partition{Id: proto.Uint32(3)})
+	txn.PutPartition(&fb.Partition{Id: 1})
+	txn.PutPartition(&fb.Partition{Id: 3})
 
-	txn.PutBlob(core.BlobIDFromParts(3, 2), &pb.Blob{Repl: proto.Uint32(3)})
-	txn.PutBlob(core.BlobIDFromParts(3, 1), &pb.Blob{Repl: proto.Uint32(3)})
-	txn.PutBlob(core.BlobIDFromParts(1, 1), &pb.Blob{Repl: proto.Uint32(3)})
-	txn.PutBlob(core.BlobIDFromParts(1, 2), &pb.Blob{Repl: proto.Uint32(3)})
+	txn.PutBlob(core.BlobIDFromParts(3, 2), &fb.Blob{Repl: 3})
+	txn.PutBlob(core.BlobIDFromParts(3, 1), &fb.Blob{Repl: 3})
+	txn.PutBlob(core.BlobIDFromParts(1, 1), &fb.Blob{Repl: 3})
+	txn.PutBlob(core.BlobIDFromParts(1, 2), &fb.Blob{Repl: 3})
 
 	txn.Commit()
 
@@ -138,9 +136,9 @@ func TestStateReadWriteIsolation(t *testing.T) {
 
 	writeTxn := s.WriteTxn(1)
 	// Create partition 1.
-	writeTxn.PutPartition(&pb.Partition{Id: proto.Uint32(1)})
+	writeTxn.PutPartition(&fb.Partition{Id: 1})
 	// Create a blob.
-	writeTxn.PutBlob(core.BlobIDFromParts(1, 1), &pb.Blob{Repl: proto.Uint32(3)})
+	writeTxn.PutBlob(core.BlobIDFromParts(1, 1), &fb.Blob{Repl: 3})
 
 	// Start a read txn without committing the write txn.
 	readTxn := s.ReadOnlyTxn()
@@ -183,12 +181,12 @@ func TestMultipleWriteTxns(t *testing.T) {
 
 	writeTxn := s.WriteTxn(1)
 	// Create partition 1.
-	writeTxn.PutPartition(&pb.Partition{Id: proto.Uint32(1)})
+	writeTxn.PutPartition(&fb.Partition{Id: 1})
 	writeTxn.Commit()
 
 	writeTxn = s.WriteTxn(2)
 	// Create a blob.
-	writeTxn.PutBlob(core.BlobIDFromParts(1, 1), &pb.Blob{Repl: proto.Uint32(3)})
+	writeTxn.PutBlob(core.BlobIDFromParts(1, 1), &fb.Blob{Repl: 3})
 	writeTxn.Commit()
 
 	// Verify that the two committed write transactions should be effective.
@@ -214,31 +212,31 @@ func TestUpdateTimes(t *testing.T) {
 	defer s.Close()
 
 	txn := s.WriteTxn(1)
-	txn.PutPartition(&pb.Partition{Id: proto.Uint32(3)})
-	txn.PutBlob(core.BlobIDFromParts(3, 1), &pb.Blob{Repl: proto.Uint32(3), Mtime: proto.Int64(200), Atime: proto.Int64(200)})
-	txn.PutBlob(core.BlobIDFromParts(3, 2), &pb.Blob{Repl: proto.Uint32(3), Mtime: proto.Int64(200), Atime: proto.Int64(200)})
+	txn.PutPartition(&fb.Partition{Id: 3})
+	txn.PutBlob(core.BlobIDFromParts(3, 1), &fb.Blob{Repl: 3, Mtime: 200e9, Atime: 200e9})
+	txn.PutBlob(core.BlobIDFromParts(3, 2), &fb.Blob{Repl: 3, Mtime: 200e9, Atime: 200e9})
 	txn.Commit()
 
 	txn = s.ReadOnlyTxn()
-	if b := txn.GetBlob(core.BlobIDFromParts(3, 1)); b == nil || b.GetMtime() != 200 || b.GetAtime() != 200 {
+	if b := txn.GetBlob(core.BlobIDFromParts(3, 1)); b == nil || b.Mtime() != 200e9 || b.Atime() != 200e9 {
 		t.Errorf("blob 3:1 has wrong times")
 	}
 	txn.Commit()
 
 	txn = s.WriteTxn(2)
 	txn.BatchUpdateTimes([]UpdateTime{
-		{Blob: core.BlobIDFromParts(3, 1), MTime: 300, ATime: 0},
-		{Blob: core.BlobIDFromParts(3, 2), MTime: 400, ATime: 0},
-		{Blob: core.BlobIDFromParts(3, 2), MTime: 300, ATime: 450},
-		{Blob: core.BlobIDFromParts(3, 3), MTime: 100, ATime: 100}, // doesn't exist
+		{Blob: core.BlobIDFromParts(3, 1), MTime: 300e9, ATime: 0},
+		{Blob: core.BlobIDFromParts(3, 2), MTime: 400e9, ATime: 0},
+		{Blob: core.BlobIDFromParts(3, 2), MTime: 300e9, ATime: 450e9},
+		{Blob: core.BlobIDFromParts(3, 3), MTime: 100e9, ATime: 100e9}, // doesn't exist
 	})
 	txn.Commit()
 
 	txn = s.ReadOnlyTxn()
-	if b := txn.GetBlob(core.BlobIDFromParts(3, 1)); b == nil || b.GetMtime() != 300 || b.GetAtime() != 200 {
+	if b := txn.GetBlob(core.BlobIDFromParts(3, 1)); b == nil || b.Mtime() != 300e9 || b.Atime() != 200e9 {
 		t.Errorf("blob 3:1 has wrong times")
 	}
-	if b := txn.GetBlob(core.BlobIDFromParts(3, 2)); b == nil || b.GetMtime() != 400 || b.GetAtime() != 450 {
+	if b := txn.GetBlob(core.BlobIDFromParts(3, 2)); b == nil || b.Mtime() != 400e9 || b.Atime() != 450e9 {
 		t.Errorf("blob 3:2 has wrong times")
 	}
 	txn.Commit()
@@ -249,9 +247,9 @@ func TestLookupTractInChunk(t *testing.T) {
 		return core.TractIDFromParts(core.BlobIDFromParts(p, b), t)
 	}
 	cid := core.RSChunkID{Partition: 0x80000555, ID: 0x5555}
-	chunk := &pb.RSChunk{ // RS(6,3)
-		Data: []*pb.RSChunk_Data{
-			{Tracts: []*pb.RSChunk_Data_Tract{
+	chunk := &fb.RSChunk{ // RS(6,3)
+		Data: []*fb.RSC_Data{
+			{Tracts: []*fb.RSC_Tract{
 				{Id: tid(123, 456, 0), Length: 100, Offset: 0},
 				{Id: tid(123, 456, 1), Length: 321, Offset: 1000},
 				{Id: tid(321, 654, 2), Length: 654, Offset: 2000},
@@ -259,7 +257,7 @@ func TestLookupTractInChunk(t *testing.T) {
 			}},
 			{},
 			{},
-			{Tracts: []*pb.RSChunk_Data_Tract{
+			{Tracts: []*fb.RSC_Tract{
 				{Id: tid(321, 654, 0), Length: 100, Offset: 0},
 				{Id: tid(321, 654, 1), Length: 321, Offset: 1000},
 				{Id: tid(123, 456, 2), Length: 654, Offset: 2000},
@@ -270,9 +268,10 @@ func TestLookupTractInChunk(t *testing.T) {
 		},
 		Hosts: []core.TractserverID{9, 8, 7, 6, 5, 4, 3, 2, 1},
 	}
+	chunkf := fb.GetRootAsRSChunkF(fb.BuildRSChunk(chunk), 0)
 
 	check := func(tid core.TractID, exp core.TractPointer) {
-		tp, _ := lookupTractInChunk(chunk, tid, rschunkID2Key(cid), core.StorageClass_RS_6_3)
+		tp, _ := lookupTractInChunk(chunkf, tid, cid, core.StorageClassRS_6_3)
 		if !reflect.DeepEqual(tp, exp) {
 			t.Errorf("wrong result for %v: %+v != %+v", tid, tp, exp)
 		}
@@ -282,11 +281,11 @@ func TestLookupTractInChunk(t *testing.T) {
 	check(tid(777, 777, 777), core.TractPointer{})
 	// present:
 	check(tid(123, 456, 2), core.TractPointer{Chunk: cid.Add(3), Offset: 2000, Length: 654, TSID: 6,
-		Class: core.StorageClass_RS_6_3, BaseChunk: cid, OtherTSIDs: chunk.Hosts})
+		Class: core.StorageClassRS_6_3, BaseChunk: cid, OtherTSIDs: chunk.Hosts})
 	check(tid(321, 654, 3), core.TractPointer{Chunk: cid.Add(0), Offset: 3000, Length: 987, TSID: 9,
-		Class: core.StorageClass_RS_6_3, BaseChunk: cid, OtherTSIDs: chunk.Hosts})
+		Class: core.StorageClassRS_6_3, BaseChunk: cid, OtherTSIDs: chunk.Hosts})
 	check(tid(321, 654, 0), core.TractPointer{Chunk: cid.Add(3), Offset: 0, Length: 100, TSID: 6,
-		Class: core.StorageClass_RS_6_3, BaseChunk: cid, OtherTSIDs: chunk.Hosts})
+		Class: core.StorageClassRS_6_3, BaseChunk: cid, OtherTSIDs: chunk.Hosts})
 }
 
 func TestLookupRSPiece(t *testing.T) {
@@ -300,12 +299,12 @@ func TestLookupRSPiece(t *testing.T) {
 	// just using Hosts here.
 	p := core.PartitionID(0x80000555)
 	k1 := core.RSChunkID{Partition: p, ID: 5000}
-	ch1 := &pb.RSChunk{Hosts: []core.TractserverID{9, 8, 7, 6, 5, 4, 3, 2, 1}}
-	txn.put(rschunkBucket, rschunkID2Key(k1), mustMarshal(ch1), defaultFillPct)
+	ch1 := &fb.RSChunk{Hosts: []core.TractserverID{9, 8, 7, 6, 5, 4, 3, 2, 1}}
+	txn.put(rschunkBucket, rschunkID2Key(k1), fb.BuildRSChunk(ch1), defaultFillPct)
 
 	k2 := core.RSChunkID{Partition: p, ID: 6000}
-	ch2 := &pb.RSChunk{Hosts: []core.TractserverID{16, 15, 14, 13, 12, 11}}
-	txn.put(rschunkBucket, rschunkID2Key(k2), mustMarshal(ch2), defaultFillPct)
+	ch2 := &fb.RSChunk{Hosts: []core.TractserverID{16, 15, 14, 13, 12, 11}}
+	txn.put(rschunkBucket, rschunkID2Key(k2), fb.BuildRSChunk(ch2), defaultFillPct)
 
 	check := func(id core.RSChunkID, expID core.TractserverID, expOK bool) {
 		tsid, ok := txn.LookupRSPiece(id.ToTractID())
@@ -338,14 +337,14 @@ func TestDeleteTractFromRSChunk(t *testing.T) {
 	bid := core.BlobIDFromParts(7, 3)
 	tid := core.TractIDFromParts(bid, 0)
 	cid := core.RSChunkID{Partition: 0x80000007, ID: 5}
-	txn.PutPartition(&pb.Partition{Id: proto.Uint32(7)})
-	txn.PutBlob(bid, &pb.Blob{
-		Tracts: []*pb.Tract{
+	txn.PutPartition(&fb.Partition{Id: 7})
+	txn.PutBlob(bid, &fb.Blob{
+		Tracts: []*fb.Tract{
 			{Version: 1},
 		},
 	})
 	hosts := []core.TractserverID{9, 8, 7, 6, 5, 4, 3, 2, 1}
-	err := txn.PutRSChunk(cid, core.StorageClass_RS_6_3, hosts, [][]EncodedTract{
+	err := txn.PutRSChunk(cid, core.StorageClassRS_6_3, hosts, [][]EncodedTract{
 		{}, {}, {{ID: tid, Offset: 123, Length: 456}}, {}, {}, {}, {}, {}, {},
 	})
 	if err != core.NoError {
@@ -354,7 +353,12 @@ func TestDeleteTractFromRSChunk(t *testing.T) {
 
 	// check that it's there
 	c := txn.GetRSChunk(cid)
-	if c.Data[2].Tracts[0].Id != tid {
+	var data fb.RSC_DataF
+	var tract fb.RSC_TractF
+	var tidf fb.TractIDF
+	c.Data(&data, 2)
+	data.Tracts(&tract, 0)
+	if tract.Id(&tidf).TractID() != tid {
 		t.Fatalf("tract not present in rs chunk")
 	}
 
@@ -363,7 +367,8 @@ func TestDeleteTractFromRSChunk(t *testing.T) {
 
 	// shouldn't be there anymore
 	c = txn.GetRSChunk(cid)
-	if len(c.Data[2].Tracts) > 0 {
+	c.Data(&data, 2)
+	if data.TractsLength() > 0 {
 		t.Fatalf("tract is still present in rs chunk")
 	}
 }
@@ -373,22 +378,22 @@ func TestGetKnownTSIDs(t *testing.T) {
 	defer s.Close()
 
 	tx := s.WriteTxn(1)
-	tx.PutPartition(&pb.Partition{Id: proto.Uint32(1)})
-	tx.PutBlob(core.BlobIDFromParts(1, 1), &pb.Blob{Repl: proto.Uint32(3),
-		Tracts: []*pb.Tract{{Hosts: []core.TractserverID{1, 5, 7}}}})
+	tx.PutPartition(&fb.Partition{Id: 1})
+	tx.PutBlob(core.BlobIDFromParts(1, 1), &fb.Blob{Repl: 3,
+		Tracts: []*fb.Tract{{Hosts: []core.TractserverID{1, 5, 7}}}})
 	tx.Commit()
 
 	tx = s.WriteTxn(2)
-	tx.PutBlob(core.BlobIDFromParts(1, 2), &pb.Blob{Repl: proto.Uint32(3),
-		Tracts: []*pb.Tract{{Hosts: []core.TractserverID{5, 7, 9}}}})
+	tx.PutBlob(core.BlobIDFromParts(1, 2), &fb.Blob{Repl: 3,
+		Tracts: []*fb.Tract{{Hosts: []core.TractserverID{5, 7, 9}}}})
 	tx.Commit()
 
 	// TODO: should test PutRSChunk and UpdateRSHosts too
 
 	tx = s.ReadOnlyTxn()
 	ids, err := tx.GetKnownTSIDs()
-	if err == core.NoError {
-		t.Errorf("should not have cached tsids yet")
+	if err != core.NoError {
+		t.Errorf("should have cached tsids already")
 	}
 	tx.Commit()
 
@@ -407,8 +412,8 @@ func TestGetKnownTSIDs(t *testing.T) {
 	}
 
 	tx = s.WriteTxn(4)
-	tx.PutBlob(core.BlobIDFromParts(1, 2), &pb.Blob{Repl: proto.Uint32(3),
-		Tracts: []*pb.Tract{{Hosts: []core.TractserverID{11, 17, 9}}}})
+	tx.PutBlob(core.BlobIDFromParts(1, 2), &fb.Blob{Repl: 3,
+		Tracts: []*fb.Tract{{Hosts: []core.TractserverID{11, 17, 9}}}})
 	tx.Commit()
 
 	tx = s.ReadOnlyTxn()

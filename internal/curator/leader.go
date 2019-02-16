@@ -11,7 +11,7 @@ import (
 	log "github.com/golang/glog"
 	"github.com/westerndigitalcorporation/blb/internal/core"
 	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state"
-	pb "github.com/westerndigitalcorporation/blb/internal/curator/durable/state/statepb"
+	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state/fb"
 )
 
 const (
@@ -216,9 +216,9 @@ func (c *Curator) gcMetadataLoop() {
 		cutoff := time.Now().Add(-c.config.MetadataUndeleteTime).UnixNano()
 
 		var toDelete []core.BlobID
-		c.stateHandler.ForEachBlob(true, func(id core.BlobID, blob *pb.Blob) {
-			del := blob.GetDeleted()
-			exp := blob.GetExpires()
+		c.stateHandler.ForEachBlob(true, func(id core.BlobID, blob *fb.BlobF) {
+			del := blob.Deleted()
+			exp := blob.Expires()
 			if (del != 0 && del < cutoff) || (exp != 0 && exp < cutoff) {
 				// The blob can be GC-ed.
 				toDelete = append(toDelete, id)

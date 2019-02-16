@@ -229,7 +229,7 @@ func (n *blobNode) Attr(ctx context.Context, attr *fuse.Attr) error {
 	// Round up to a 4KB block size, since we're storing things on ext4 in the end.
 	const underlyingBlockSize = 4096
 	attr.Blocks = uint64(length+underlyingBlockSize-1) / underlyingBlockSize / 512
-	if info.Class == core.StorageClass_REPLICATED {
+	if info.Class == core.StorageClassREPLICATED {
 		attr.Mode = 0644
 	} else {
 		attr.Mode = 0444

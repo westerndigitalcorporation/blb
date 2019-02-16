@@ -54,7 +54,7 @@ outer:
 	for {
 		for i, b := range blobs {
 			bi, _ := b.Stat()
-			if bi.Class == core.StorageClass_RS_6_3 {
+			if bi.Class == core.StorageClassRS_6_3 {
 				rsBlob = b
 				rsIdx = i
 				break outer
