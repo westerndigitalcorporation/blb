@@ -4,7 +4,7 @@
 namespace internal.curator.durable.state.fb;
 
 // TractIDF is a 10-byte value that can refer to a tract or an RS chunk, just like common.TractID.
-// Declare it with shorts so flatbuffers doesn't pad for excessive alignment.
+// Declare it with five two-byte ushorts so flatbuffers doesn't pad for excessive alignment.
 struct TractIDF {
   b1: ushort;
   b2: ushort;
