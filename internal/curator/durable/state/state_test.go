@@ -392,8 +392,8 @@ func TestGetKnownTSIDs(t *testing.T) {
 
 	tx = s.ReadOnlyTxn()
 	ids, err := tx.GetKnownTSIDs()
-	if err != core.NoError {
-		t.Errorf("should have cached tsids already")
+	if err == core.NoError {
+		t.Errorf("should not have cached tsids yet")
 	}
 	tx.Commit()
 

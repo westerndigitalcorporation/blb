@@ -101,23 +101,18 @@ func Open(path string) *State {
 	if err != nil {
 		log.Fatalf("Failed to start a transaction: %v", err)
 	}
-
-	// Check if we're starting with an empty db.
-	isNewDb := tx.Bucket(metaBucket) == nil
-
-	for _, bucket := range [][]byte{
-		partitionBucket, blobBucket, rschunkBucket, metaBucket,
-	} {
-		if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
-			log.Fatalf("Failed to create bucket %q: %v", bucket, err)
-		}
+	if _, err := tx.CreateBucketIfNotExists(partitionBucket); err != nil {
+		log.Fatalf("Failed to create partition bucket: %v", err)
 	}
-
-	if isNewDb {
-		// If we're starting from scratch, we can use the tsid cache without explicit commands.
-		tx.Bucket(metaBucket).Put(tsidsKey, []byte{})
+	if _, err := tx.CreateBucketIfNotExists(blobBucket); err != nil {
+		log.Fatalf("Failed to create blob bucket: %v", err)
 	}
-
+	if _, err := tx.CreateBucketIfNotExists(rschunkBucket); err != nil {
+		log.Fatalf("Failed to create rschunk bucket: %v", err)
+	}
+	if _, err := tx.CreateBucketIfNotExists(metaBucket); err != nil {
+		log.Fatalf("Failed to create id bucket: %v", err)
+	}
 	if err := tx.Commit(); err != nil {
 		log.Fatalf("Failed to commit creation of buckets: %v", err)
 	}
