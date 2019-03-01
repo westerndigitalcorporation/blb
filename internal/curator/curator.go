@@ -188,15 +188,9 @@ func (c *Curator) updateTsmonLoop() {
 
 	for {
 		c.blockIfNotLeader()
-		if ids, err := c.stateHandler.GetKnownTSIDs(); err == core.NoError {
-			c.tsMon.updateExpected(ids)
-			log.Infof("@@@ tsmon: %s", c.tsMon)
-		} else {
-			log.Infof("creating tsid cache...")
-			err = c.stateHandler.CreateTSIDCache()
-			log.Infof("created tsid cache: %s", err)
-			continue
-		}
+		ids := c.stateHandler.GetKnownTSIDs()
+		c.tsMon.updateExpected(ids)
+		log.Infof("@@@ tsmon: %s", c.tsMon)
 		<-scanTicker.C
 	}
 }

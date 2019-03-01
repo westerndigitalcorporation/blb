@@ -98,8 +98,6 @@ func (h *StateHandler) Apply(ent raft.Entry) interface{} {
 		return c.apply(txn)
 	case UpdateStorageClassCommand:
 		return c.apply(txn)
-	case CreateTSIDCacheCommand:
-		return c.apply(txn)
 	}
 
 	log.Fatalf("applying unknown command %v", cmd)
@@ -322,8 +320,4 @@ func (cmd UpdateRSHostsCommand) apply(txn *state.Txn) core.Error {
 
 func (cmd UpdateStorageClassCommand) apply(txn *state.Txn) core.Error {
 	return txn.UpdateStorageClass(cmd.ID, cmd.Storage)
-}
-
-func (cmd CreateTSIDCacheCommand) apply(txn *state.Txn) core.Error {
-	return txn.CreateTSIDCache()
 }

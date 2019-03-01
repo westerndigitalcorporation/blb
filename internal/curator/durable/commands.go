@@ -42,7 +42,6 @@ func init() {
 	gob.Register(CommitRSChunkCommand{})
 	gob.Register(UpdateRSHostsCommand{})
 	gob.Register(UpdateStorageClassCommand{})
-	gob.Register(CreateTSIDCacheCommand{})
 }
 
 // SetReadOnlyModeCommand changes the read-only mode of the curator's state.
@@ -246,11 +245,6 @@ type UpdateRSHostsCommand struct {
 type UpdateStorageClassCommand struct {
 	ID      core.BlobID
 	Storage core.StorageClass
-}
-
-// CreateTSIDCacheCommand tells the curator to create the TSID cache in the
-// database.
-type CreateTSIDCacheCommand struct {
 }
 
 // cmdToBytes wraps 'cmd' in Command and serializes it into bytes. It dies if it

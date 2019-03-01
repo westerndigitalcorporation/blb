@@ -590,22 +590,8 @@ func (h *StateHandler) UpdateStorageClass(id core.BlobID, target core.StorageCla
 	return pending.Res.(core.Error)
 }
 
-// CreateTSIDCache creates the TSID cache in the state database.
-func (h *StateHandler) CreateTSIDCache() core.Error {
-	pending := h.raft.Propose(cmdToBytes(CreateTSIDCacheCommand{}))
-	select {
-	case <-time.After(core.ProposalTimeout):
-		return core.ErrRaftTimeout
-	case <-pending.Done:
-	}
-	if pending.Err != nil {
-		return core.FromRaftError(pending.Err)
-	}
-	return pending.Res.(core.Error)
-}
-
 // GetKnownTSIDs returns all the known tractserver IDs in the database.
-func (h *StateHandler) GetKnownTSIDs() ([]core.TractserverID, core.Error) {
+func (h *StateHandler) GetKnownTSIDs() []core.TractserverID {
 	txn := h.LocalReadOnlyTxn()
 	defer txn.Commit()
 	return txn.GetKnownTSIDs()
