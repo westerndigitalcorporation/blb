@@ -87,23 +87,28 @@ func BuildRSChunk(c *RSChunk) []byte {
 		return bu.EndVector(len(hosts))
 	}
 
-	putData := func(tracts []*RSC_Tract) flatbuffers.UOffsetT {
+	putTractsVec := func(tracts []*RSC_Tract) flatbuffers.UOffsetT {
 		RSC_DataFStartTractsVector(bu, len(tracts))
 		for i := len(tracts) - 1; i >= 0; i-- {
 			t := tracts[i]
 			CreateRSC_TractFWithID(bu, t.Id, t.Length, t.Offset)
 		}
-		vec := bu.EndVector(len(tracts))
-		RSC_DataFStart(bu)
-		RSC_DataFAddTracts(bu, vec)
-		return RSC_DataFEnd(bu)
+		return bu.EndVector(len(tracts))
 	}
 
 	putDataVec := func(data []*RSC_Data) flatbuffers.UOffsetT {
 		dLen := len(data)
 		dOffs := make([]flatbuffers.UOffsetT, dLen)
 		for i := dLen - 1; i >= 0; i-- {
-			dOffs[dLen-i-1] = putData(data[i].Tracts)
+			var vec flatbuffers.UOffsetT
+			if data[i] != nil {
+				vec = putTractsVec(data[i].Tracts)
+			}
+			RSC_DataFStart(bu)
+			if vec != 0 {
+				RSC_DataFAddTracts(bu, vec)
+			}
+			dOffs[dLen-i-1] = RSC_DataFEnd(bu)
 		}
 		RSChunkFStartDataVector(bu, dLen)
 		for _, off := range dOffs {

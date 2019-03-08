@@ -182,6 +182,9 @@ type HostsLister interface {
 
 // HostsList returns the list of hosts as a slice.
 func HostsList(l HostsLister) []core.TractserverID {
+	if l.HostsLength() == 0 {
+		return nil
+	}
 	out := make([]core.TractserverID, l.HostsLength())
 	for i := range out {
 		out[i] = core.TractserverID(l.Hosts(i))

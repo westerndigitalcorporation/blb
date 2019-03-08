@@ -30,11 +30,13 @@ func (b *BlobF) ToStruct() (o *Blob) {
 	o = new(Blob)
 	o.Storage = b.Storage()
 	o.Hint = b.Hint()
-	o.Tracts = make([]*Tract, b.TractsLength())
-	var t TractF
-	for i := range o.Tracts {
-		b.Tracts(&t, i)
-		o.Tracts[i] = t.ToStruct()
+	if b.TractsLength() > 0 {
+		o.Tracts = make([]*Tract, b.TractsLength())
+		var t TractF
+		for i := range o.Tracts {
+			b.Tracts(&t, i)
+			o.Tracts[i] = t.ToStruct()
+		}
 	}
 	o.Repl = b.Repl()
 	o.Deleted = b.Deleted()
@@ -69,11 +71,13 @@ func (r *RSChunkF) ToStruct() (o *RSChunk) {
 // ToStruct creates a RSC_Data from a RSC_DataF.
 func (d *RSC_DataF) ToStruct() (o *RSC_Data) {
 	o = new(RSC_Data)
-	o.Tracts = make([]*RSC_Tract, d.TractsLength())
-	var t RSC_TractF
-	for i := range o.Tracts {
-		d.Tracts(&t, i)
-		o.Tracts[i] = t.ToStruct()
+	if d.TractsLength() > 0 {
+		o.Tracts = make([]*RSC_Tract, d.TractsLength())
+		var t RSC_TractF
+		for i := range o.Tracts {
+			d.Tracts(&t, i)
+			o.Tracts[i] = t.ToStruct()
+		}
 	}
 	return
 }
