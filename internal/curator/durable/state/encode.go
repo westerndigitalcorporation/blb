@@ -8,8 +8,6 @@ import (
 	"log"
 	"unsafe"
 
-	"github.com/golang/protobuf/proto"
-
 	"github.com/westerndigitalcorporation/blb/internal/core"
 )
 
@@ -64,19 +62,4 @@ func key2rschunkID(key []byte) (c core.RSChunkID) {
 	c.Partition = core.PartitionID(binary.BigEndian.Uint32(key[0:4]))
 	c.ID = uint64(binary.BigEndian.Uint16(key[4:6]))<<32 | uint64(binary.BigEndian.Uint32(key[6:10]))
 	return
-}
-
-func mustMarshal(pb proto.Message) []byte {
-	b, e := proto.Marshal(pb)
-	if e != nil {
-		log.Fatalf("Error marshaling proto message: %v", e)
-	}
-	return b
-}
-
-func mustUnmarshal(buf []byte, pb proto.Message) {
-	e := proto.Unmarshal(buf, pb)
-	if e != nil {
-		log.Fatalf("Error unmarshaling proto message: %v", e)
-	}
 }

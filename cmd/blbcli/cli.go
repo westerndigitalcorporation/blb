@@ -605,8 +605,8 @@ func (b *blbCli) cmdSetMd(c *cli.Context) {
 	var md core.BlobInfo
 	if hintStr := c.String("hint"); hintStr != "" {
 		hintStr = strings.ToUpper(hintStr)
-		if hintInt, ok := core.StorageHint_value[hintStr]; ok {
-			md.Hint = core.StorageHint(hintInt)
+		if hint, ok := core.ParseStorageHint(hintStr); ok {
+			md.Hint = hint
 		} else {
 			log.Errorf("Couldn't parse storage hint %q", hintStr)
 			return

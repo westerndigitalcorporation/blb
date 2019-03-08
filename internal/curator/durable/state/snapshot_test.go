@@ -11,10 +11,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/golang/protobuf/proto"
-
 	"github.com/westerndigitalcorporation/blb/internal/core"
-	pb "github.com/westerndigitalcorporation/blb/internal/curator/durable/state/statepb"
+	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state/fb"
 	test "github.com/westerndigitalcorporation/blb/pkg/testutil"
 )
 
@@ -26,15 +24,15 @@ func TestStateSnapshot(t *testing.T) {
 
 	txn := s1.WriteTxn(1)
 	txn.SetCuratorID(1)
-	txn.PutPartition(&pb.Partition{Id: proto.Uint32(1)})
-	txn.PutPartition(&pb.Partition{Id: proto.Uint32(3)})
-	txn.PutBlob(core.BlobIDFromParts(1, 1), &pb.Blob{Repl: proto.Uint32(3)})
-	txn.PutBlob(core.BlobIDFromParts(1, 2), &pb.Blob{Repl: proto.Uint32(3)})
-	txn.PutBlob(core.BlobIDFromParts(3, 1), &pb.Blob{Repl: proto.Uint32(3)})
-	txn.PutBlob(core.BlobIDFromParts(3, 2), &pb.Blob{Repl: proto.Uint32(3)})
+	txn.PutPartition(&fb.Partition{Id: 1})
+	txn.PutPartition(&fb.Partition{Id: 3})
+	txn.PutBlob(core.BlobIDFromParts(1, 1), &fb.Blob{Repl: 3})
+	txn.PutBlob(core.BlobIDFromParts(1, 2), &fb.Blob{Repl: 3})
+	txn.PutBlob(core.BlobIDFromParts(3, 1), &fb.Blob{Repl: 3})
+	txn.PutBlob(core.BlobIDFromParts(3, 2), &fb.Blob{Repl: 3})
 	for i := 1; i < 1000; i++ {
 		k := core.BlobKey(i)
-		txn.PutBlob(core.BlobIDFromParts(3, k), &pb.Blob{Repl: proto.Uint32(3)})
+		txn.PutBlob(core.BlobIDFromParts(3, k), &fb.Blob{Repl: 3})
 	}
 	txn.Commit()
 

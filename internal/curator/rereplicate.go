@@ -186,7 +186,7 @@ func (c *Curator) replicateTract(id core.TractID, badIds []core.TractserverID) c
 		}
 	}
 
-	if _, err = c.stateHandler.ChangeTract(id, nextVersion, append(okIds, newIds...), term); err != core.NoError {
+	if err = c.stateHandler.ChangeTract(id, nextVersion, append(okIds, newIds...), term); err != core.NoError {
 		log.Errorf("%v couldn't commit change to durable state: %s", id, err)
 		return err
 	}

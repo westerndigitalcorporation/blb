@@ -250,7 +250,7 @@ func (h *CuratorSrvHandler) GetTracts(req core.GetTractsReq, reply *core.GetTrac
 	reply.Tracts, cls, reply.Err = h.curator.getTracts(req.Blob, req.Start, req.End)
 
 	// Signal error if trying to write to EC tract here.
-	if reply.Err == core.NoError && req.ForWrite && cls != core.StorageClass_REPLICATED {
+	if reply.Err == core.NoError && req.ForWrite && cls != core.StorageClassREPLICATED {
 		reply.Tracts = nil
 		reply.Err = core.ErrReadOnlyStorageClass
 	}

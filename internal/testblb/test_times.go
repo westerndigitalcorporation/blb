@@ -30,6 +30,9 @@ func (tc *TestCase) TestTimes() error {
 		t1 = info.MTime
 	}
 
+	// Time resolution is only one second.
+	time.Sleep(2 * time.Second)
+
 	// open for write to update mtime
 	if _, err := tc.c.Open(id, "w"); err != nil {
 		return err
@@ -79,7 +82,7 @@ func (tc *TestCase) TestTimes() error {
 
 	// check round-trip expiry time (stuck here instead of making a new case to
 	// keep things faster)
-	hour := time.Now().Add(time.Hour)
+	hour := time.Now().Add(time.Hour).Truncate(time.Second)
 	blob, err = tc.c.Create(client.WithExpires(hour))
 	if err != nil {
 		return err
@@ -87,7 +90,7 @@ func (tc *TestCase) TestTimes() error {
 	if info, err := blob.Stat(); err != nil {
 		return err
 	} else if !info.Expires.Equal(hour) {
-		return fmt.Errorf("didn't get expiry time back")
+		return fmt.Errorf("didn't get expiry time back: %s != %s", info.Expires, hour)
 	}
 
 	return nil

@@ -288,7 +288,7 @@ func (c *Curator) create(repl int, hint core.StorageHint, expires time.Time) (co
 	if repl <= 0 || repl > c.config.MaxReplFactor {
 		return core.BlobID(0), core.ErrInvalidArgument
 	}
-	if _, ok := core.StorageHint_name[int32(hint)]; !ok {
+	if _, ok := core.EnumNamesStorageHint[hint]; !ok {
 		return core.BlobID(0), core.ErrInvalidArgument
 	}
 
@@ -407,7 +407,7 @@ func (c *Curator) getTracts(id core.BlobID, start, end int) ([]core.TractInfo, c
 	// Sanity check.
 	if start < 0 || end < 0 || end < start {
 		log.Errorf("getTracts: %v invalid start and/or end: [%d,%d)", id, start, end)
-		return nil, core.StorageClass_REPLICATED, core.ErrInvalidArgument
+		return nil, core.StorageClassREPLICATED, core.ErrInvalidArgument
 	}
 
 	// Retrieve tractserver IDs from the durable state.
@@ -537,7 +537,7 @@ func (c *Curator) fixVersion(id core.TractID, cliVersion int, badAddr string) co
 	}
 
 	// Mutate the tract in durable state.
-	_, err = c.stateHandler.ChangeTract(id, durInfo.Version+1, durInfo.TSIDs, term)
+	err = c.stateHandler.ChangeTract(id, durInfo.Version+1, durInfo.TSIDs, term)
 	if err != core.NoError {
 		log.Errorf("fixVersion: %s ChangeTract failed: %s", id, err)
 	}

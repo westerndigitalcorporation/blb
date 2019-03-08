@@ -14,14 +14,18 @@ import (
 	"github.com/westerndigitalcorporation/blb/internal/core"
 	"github.com/westerndigitalcorporation/blb/internal/curator/durable"
 	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state"
+	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state/fb"
 	"github.com/westerndigitalcorporation/blb/pkg/raft/raft"
 	test "github.com/westerndigitalcorporation/blb/pkg/testutil"
 )
 
-const defHint = core.StorageHint_DEFAULT
+const defHint = core.StorageHintDEFAULT
 
 // For testing purposes, adds a tractserver with provided id & address.
 func (c *Curator) addTS(id core.TractserverID, addr string) []core.PartitionID {
+	if !id.IsValid() {
+		panic("invalid tractserver id")
+	}
 	return c.tractserverHeartbeat(id, addr, nil, nil, core.TractserverLoad{AvailSpace: 1024 * 1024 * 1024 * 1024})
 }
 
@@ -188,7 +192,7 @@ func TestExtendNoHosts(t *testing.T) {
 
 	// Add a host, and extend.
 	addr := "somehost:someport"
-	c.addTS(0, addr)
+	c.addTS(33, addr)
 	if newTracts, err = c.extend(id, 1); core.NoError != err {
 		t.Errorf("extending should have worked but did not, got %s", err)
 	}
@@ -231,7 +235,7 @@ func TestExtendHostsButHighRepl(t *testing.T) {
 
 	// Add a host, and extend.  Won't work -- can't satisfy repl=5
 	addr := "thisisnt:validated"
-	c.addTS(0, addr)
+	c.addTS(55, addr)
 
 	newTracts, err = c.extend(id, 1)
 	if core.NoError == err {
@@ -345,7 +349,7 @@ func TestExtendWithoutAck(t *testing.T) {
 
 	// Create a blob.
 	id, err := c.create(3, defHint, time.Time{})
-	for i := 0; i < 3; i++ {
+	for i := 1; i < 4; i++ {
 		c.addTS(core.TractserverID(i), fmt.Sprintf("addr%d", i))
 	}
 	if core.NoError != err {
@@ -379,7 +383,7 @@ func TestConcurrentExtend(t *testing.T) {
 
 	// Create a blob.
 	id, err := c.create(3, defHint, time.Time{})
-	for i := 0; i < 3; i++ {
+	for i := 1; i < 4; i++ {
 		c.addTS(core.TractserverID(i), fmt.Sprintf("addr%d", i))
 	}
 	if core.NoError != err {
@@ -440,7 +444,7 @@ func TestStatBlobBasic(t *testing.T) {
 
 	// Create a blob.
 	addr := "adventure:time"
-	c.addTS(0, addr)
+	c.addTS(2222, addr)
 
 	// repl=1
 	id, err := c.create(1, defHint, time.Time{})
@@ -532,7 +536,7 @@ func TestGetTractsOverlap(t *testing.T) {
 
 	// We'll use repl=1 so this should be fine.
 	addr := "localhost:2001"
-	c.addTS(0, addr)
+	c.addTS(2001, addr)
 
 	// Create a blob.
 	id, err := c.create(1, defHint, time.Time{})
@@ -644,10 +648,10 @@ func TestGetTractsEC(t *testing.T) {
 		{pts(8), pts(10)},         // 5
 		{pts(9), pts(1)},          // 4
 	}
-	if err := c.stateHandler.CommitRSChunk(chunk, core.StorageClass_RS_6_3, hosts, data, 0); err != core.NoError {
+	if err := c.stateHandler.CommitRSChunk(chunk, core.StorageClassRS_6_3, hosts, data, 0); err != core.NoError {
 		t.Fatalf("CommitRSChunk failed: %s", err)
 	}
-	if err := c.stateHandler.UpdateStorageClass(id, core.StorageClass_RS_6_3, 0); err != core.NoError {
+	if err := c.stateHandler.UpdateStorageClass(id, core.StorageClassRS_6_3, 0); err != core.NoError {
 		t.Fatalf("UpdateStorageClass failed: %s", err)
 	}
 
@@ -706,7 +710,7 @@ func TestNewPartition(t *testing.T) {
 
 	// We'll use repl=1 so this should be fine.
 	addr := "localhost:2001"
-	c.addTS(0, addr)
+	c.addTS(2001, addr)
 
 	// Create enough blobs so that we reach the point for a second partition.
 	for i := 0; i < 10; i++ {
@@ -911,10 +915,10 @@ func TestReconstructRSChunk(t *testing.T) {
 		return state.EncodedTract{ID: tracts[i].Tract, Offset: 100 * i, Length: 100}
 	}
 	data := [][]state.EncodedTract{{pts(4)}, {pts(2)}, {pts(3)}, {pts(1)}, {pts(0)}, {pts(5)}}
-	if err := c.stateHandler.CommitRSChunk(chunk, core.StorageClass_RS_6_3, hosts, data, 0); err != core.NoError {
+	if err := c.stateHandler.CommitRSChunk(chunk, core.StorageClassRS_6_3, hosts, data, 0); err != core.NoError {
 		t.Fatalf("CommitRSChunk failed: %s", err)
 	}
-	if err := c.stateHandler.UpdateStorageClass(id, core.StorageClass_RS_6_3, 0); err != core.NoError {
+	if err := c.stateHandler.UpdateStorageClass(id, core.StorageClassRS_6_3, 0); err != core.NoError {
 		t.Fatalf("UpdateStorageClass failed: %s", err)
 	}
 
@@ -969,8 +973,8 @@ func TestReconstructRSChunk(t *testing.T) {
 
 	// Check that durable state was updated.
 	ch := c.stateHandler.GetRSChunk(chunk)
-	if !reflect.DeepEqual(ch.Hosts, []core.TractserverID{9, 8, destID, 6, 5, 4, otherID, 2, 1}) {
-		t.Errorf("hosts were not updated: %v, %d, %d", ch.Hosts, destID, otherID)
+	if !reflect.DeepEqual(fb.HostsList(ch), []core.TractserverID{9, 8, destID, 6, 5, 4, otherID, 2, 1}) {
+		t.Errorf("hosts were not updated: %v, %d, %d", fb.HostsList(ch), destID, otherID)
 	}
 }
 

@@ -15,16 +15,16 @@ import (
 // Create options:
 
 // StorageDefault causes the blob to be created with the default storage hint.
-func StorageDefault(o *createOptions) { o.hint = core.StorageHint_DEFAULT }
+func StorageDefault(o *createOptions) { o.hint = core.StorageHintDEFAULT }
 
 // StorageHot causes the blob to be created with an intention for hot storage.
-func StorageHot(o *createOptions) { o.hint = core.StorageHint_HOT }
+func StorageHot(o *createOptions) { o.hint = core.StorageHintHOT }
 
 // StorageWarm causes the blob to be created with an intention for warm storage.
-func StorageWarm(o *createOptions) { o.hint = core.StorageHint_WARM }
+func StorageWarm(o *createOptions) { o.hint = core.StorageHintWARM }
 
 // StorageCold causes the blob to be created with an intention for cold storage.
-func StorageCold(o *createOptions) { o.hint = core.StorageHint_COLD }
+func StorageCold(o *createOptions) { o.hint = core.StorageHintCOLD }
 
 // ReplFactor causes the blob to be created with replication factor n.
 func ReplFactor(n int) createOpt { return func(o *createOptions) { o.repl = n } }
@@ -33,13 +33,13 @@ func ReplFactor(n int) createOpt { return func(o *createOptions) { o.repl = n } 
 func WithExpires(e time.Time) createOpt { return func(o *createOptions) { o.expires = e } }
 
 // CreatePriHigh gives high priority to all disk operations related to this blob.
-func CreatePriHigh(o *createOptions) { o.pri = core.Priority_HIGH }
+func CreatePriHigh(o *createOptions) { o.pri = core.PriorityHIGH }
 
 // CreatePriMedium gives medium priority to all disk operations related to this blob.
-func CreatePriMedium(o *createOptions) { o.pri = core.Priority_MEDIUM }
+func CreatePriMedium(o *createOptions) { o.pri = core.PriorityMEDIUM }
 
 // CreatePriLow gives low priority to all disk operations related to this blob.
-func CreatePriLow(o *createOptions) { o.pri = core.Priority_LOW }
+func CreatePriLow(o *createOptions) { o.pri = core.PriorityLOW }
 
 // CreateContext associates a context with this Create call.
 func CreateContext(ctx context.Context) createOpt { return func(o *createOptions) { o.ctx = ctx } }
@@ -47,13 +47,13 @@ func CreateContext(ctx context.Context) createOpt { return func(o *createOptions
 // Open options:
 
 // OpenPriHigh gives high priority to all disk operations related to this blob.
-func OpenPriHigh(o *openOptions) { o.pri = core.Priority_HIGH }
+func OpenPriHigh(o *openOptions) { o.pri = core.PriorityHIGH }
 
 // OpenPriMedium gives medium priority to all disk operations related to this blob.
-func OpenPriMedium(o *openOptions) { o.pri = core.Priority_MEDIUM }
+func OpenPriMedium(o *openOptions) { o.pri = core.PriorityMEDIUM }
 
 // OpenPriLow gives low priority to all disk operations related to this blob.
-func OpenPriLow(o *openOptions) { o.pri = core.Priority_LOW }
+func OpenPriLow(o *openOptions) { o.pri = core.PriorityLOW }
 
 // OpenContext associates a context with this Open call.
 func OpenContext(ctx context.Context) openOpt { return func(o *openOptions) { o.ctx = ctx } }
@@ -71,8 +71,8 @@ type createOptions struct {
 
 var defaultCreateOptions = createOptions{
 	repl: 3,
-	hint: core.StorageHint_DEFAULT,
-	pri:  core.Priority_TSDEFAULT,
+	hint: core.StorageHintDEFAULT,
+	pri:  core.PriorityTSDEFAULT,
 }
 
 type createOpt func(*createOptions)
@@ -83,7 +83,7 @@ type openOptions struct {
 }
 
 var defaultOpenOptions = openOptions{
-	pri: core.Priority_TSDEFAULT,
+	pri: core.PriorityTSDEFAULT,
 }
 
 type openOpt func(*openOptions)

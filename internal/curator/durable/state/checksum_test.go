@@ -6,10 +6,8 @@ package state
 import (
 	"testing"
 
-	"github.com/golang/protobuf/proto"
-
 	"github.com/westerndigitalcorporation/blb/internal/core"
-	pb "github.com/westerndigitalcorporation/blb/internal/curator/durable/state/statepb"
+	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state/fb"
 )
 
 func checksum(s *State, startBlob core.BlobID, n int) uint64 {
@@ -37,7 +35,7 @@ type putRSChunkArgs struct {
 	data    [][]EncodedTract
 }
 
-func makeState(t *testing.T, id core.CuratorID, parts []pb.Partition, blobs map[core.BlobID]pb.Blob,
+func makeState(t *testing.T, id core.CuratorID, parts []fb.Partition, blobs map[core.BlobID]fb.Blob,
 	chunks []putRSChunkArgs) (s *State) {
 
 	s = getTestState(t)
@@ -58,8 +56,8 @@ func makeState(t *testing.T, id core.CuratorID, parts []pb.Partition, blobs map[
 	return
 }
 
-func makeTract(version int, hosts ...core.TractserverID) *pb.Tract {
-	return &pb.Tract{
+func makeTract(version int, hosts ...core.TractserverID) *fb.Tract {
+	return &fb.Tract{
 		Version: version,
 		Hosts:   hosts,
 	}
@@ -78,47 +76,47 @@ func TestChecksum(t *testing.T) {
 		makeState(t, 2, nil, nil, nil),
 		// 2
 		makeState(t, 1,
-			[]pb.Partition{
-				{Id: proto.Uint32(1), NextBlobKey: proto.Uint32(1)},
+			[]fb.Partition{
+				{Id: 1, NextBlobKey: 1},
 			},
 			nil,
 			nil,
 		),
 		// 3
 		makeState(t, 1,
-			[]pb.Partition{
-				{Id: proto.Uint32(2), NextBlobKey: proto.Uint32(1)},
+			[]fb.Partition{
+				{Id: 2, NextBlobKey: 1},
 			},
 			nil,
 			nil,
 		),
 		// 4
 		makeState(t, 1,
-			[]pb.Partition{
-				{Id: proto.Uint32(1), NextBlobKey: proto.Uint32(1)},
+			[]fb.Partition{
+				{Id: 1, NextBlobKey: 1},
 			},
-			map[core.BlobID]pb.Blob{
-				core.BlobIDFromParts(1, 1): {Repl: proto.Uint32(3)},
+			map[core.BlobID]fb.Blob{
+				core.BlobIDFromParts(1, 1): {Repl: 3},
 			},
 			nil,
 		),
 		// 5
 		makeState(t, 1,
-			[]pb.Partition{
-				{Id: proto.Uint32(1), NextBlobKey: proto.Uint32(2)},
+			[]fb.Partition{
+				{Id: 1, NextBlobKey: 2},
 			},
-			map[core.BlobID]pb.Blob{
-				core.BlobIDFromParts(1, 1): {Repl: proto.Uint32(3)},
+			map[core.BlobID]fb.Blob{
+				core.BlobIDFromParts(1, 1): {Repl: 3},
 			},
 			nil,
 		),
 		// 6
 		makeState(t, 1,
-			[]pb.Partition{
-				{Id: proto.Uint32(1), NextBlobKey: proto.Uint32(2)},
+			[]fb.Partition{
+				{Id: 1, NextBlobKey: 2},
 			},
-			map[core.BlobID]pb.Blob{
-				core.BlobIDFromParts(1, 1): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+			map[core.BlobID]fb.Blob{
+				core.BlobIDFromParts(1, 1): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 1, 2, 3),
 				}},
 			},
@@ -126,11 +124,11 @@ func TestChecksum(t *testing.T) {
 		),
 		// 7
 		makeState(t, 1,
-			[]pb.Partition{
-				{Id: proto.Uint32(1), NextBlobKey: proto.Uint32(2)},
+			[]fb.Partition{
+				{Id: 1, NextBlobKey: 2},
 			},
-			map[core.BlobID]pb.Blob{
-				core.BlobIDFromParts(1, 1): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+			map[core.BlobID]fb.Blob{
+				core.BlobIDFromParts(1, 1): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 1, 2, 3),
 					makeTract(2, 4, 2, 5),
 				}},
@@ -139,15 +137,15 @@ func TestChecksum(t *testing.T) {
 		),
 		// 8
 		makeState(t, 1,
-			[]pb.Partition{
-				{Id: proto.Uint32(1), NextBlobKey: proto.Uint32(3)},
+			[]fb.Partition{
+				{Id: 1, NextBlobKey: 3},
 			},
-			map[core.BlobID]pb.Blob{
-				core.BlobIDFromParts(1, 1): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+			map[core.BlobID]fb.Blob{
+				core.BlobIDFromParts(1, 1): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 1, 2, 3),
 					makeTract(2, 4, 2, 5),
 				}},
-				core.BlobIDFromParts(1, 2): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+				core.BlobIDFromParts(1, 2): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 1, 2, 3),
 					makeTract(3, 4, 2, 5),
 				}},
@@ -156,28 +154,28 @@ func TestChecksum(t *testing.T) {
 		),
 		// 9
 		makeState(t, 1,
-			[]pb.Partition{
-				{Id: proto.Uint32(1), NextBlobKey: proto.Uint32(3)},
-				{Id: proto.Uint32(2), NextBlobKey: proto.Uint32(4)},
+			[]fb.Partition{
+				{Id: 1, NextBlobKey: 3},
+				{Id: 2, NextBlobKey: 4},
 			},
-			map[core.BlobID]pb.Blob{
-				core.BlobIDFromParts(1, 1): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+			map[core.BlobID]fb.Blob{
+				core.BlobIDFromParts(1, 1): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 1, 2, 3),
 					makeTract(2, 4, 2, 5),
 				}},
-				core.BlobIDFromParts(1, 2): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+				core.BlobIDFromParts(1, 2): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 1, 2, 3),
 					makeTract(3, 4, 2, 5),
 				}},
-				core.BlobIDFromParts(2, 1): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+				core.BlobIDFromParts(2, 1): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 1, 2, 3),
 					makeTract(2, 4, 2, 5),
 				}},
-				core.BlobIDFromParts(2, 2): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+				core.BlobIDFromParts(2, 2): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 1, 2, 3),
 					makeTract(3, 4, 2, 5),
 				}},
-				core.BlobIDFromParts(2, 3): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+				core.BlobIDFromParts(2, 3): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 6, 9, 8),
 				}},
 			},
@@ -185,15 +183,15 @@ func TestChecksum(t *testing.T) {
 		),
 		// 10 (partitions and blobs same as 7)
 		makeState(t, 1,
-			[]pb.Partition{
-				{Id: proto.Uint32(1), NextBlobKey: proto.Uint32(3)},
+			[]fb.Partition{
+				{Id: 1, NextBlobKey: 3},
 			},
-			map[core.BlobID]pb.Blob{
-				core.BlobIDFromParts(1, 1): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+			map[core.BlobID]fb.Blob{
+				core.BlobIDFromParts(1, 1): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 1, 2, 3),
 					makeTract(2, 4, 2, 5),
 				}},
-				core.BlobIDFromParts(1, 2): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+				core.BlobIDFromParts(1, 2): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 1, 2, 3),
 					makeTract(3, 4, 2, 5),
 				}},
@@ -201,7 +199,7 @@ func TestChecksum(t *testing.T) {
 			[]putRSChunkArgs{
 				{
 					core.RSChunkID{Partition: 0x80000001, ID: 54321},
-					core.StorageClass_RS_6_3,
+					core.StorageClassRS_6_3,
 					[]core.TractserverID{1, 2, 3, 4, 5, 6, 9, 8, 7},
 					[][]EncodedTract{
 						{{core.TractIDFromParts(core.BlobIDFromParts(1, 2), 0), 0, 100, 6}},
@@ -215,15 +213,15 @@ func TestChecksum(t *testing.T) {
 		),
 		// 11 (partitions and blobs same as 7, 10)
 		makeState(t, 1,
-			[]pb.Partition{
-				{Id: proto.Uint32(1), NextBlobKey: proto.Uint32(3)},
+			[]fb.Partition{
+				{Id: 1, NextBlobKey: 3},
 			},
-			map[core.BlobID]pb.Blob{
-				core.BlobIDFromParts(1, 1): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+			map[core.BlobID]fb.Blob{
+				core.BlobIDFromParts(1, 1): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 1, 2, 3),
 					makeTract(2, 4, 2, 5),
 				}},
-				core.BlobIDFromParts(1, 2): {Repl: proto.Uint32(3), Tracts: []*pb.Tract{
+				core.BlobIDFromParts(1, 2): {Repl: 3, Tracts: []*fb.Tract{
 					makeTract(1, 1, 2, 3),
 					makeTract(3, 4, 2, 5),
 				}},
@@ -231,7 +229,7 @@ func TestChecksum(t *testing.T) {
 			[]putRSChunkArgs{
 				{
 					core.RSChunkID{Partition: 0x80000001, ID: 54321},
-					core.StorageClass_RS_6_3,
+					core.StorageClassRS_6_3,
 					[]core.TractserverID{1, 2, 3, 4, 5, 6, 9, 8, 7},
 					[][]EncodedTract{
 						{{core.TractIDFromParts(core.BlobIDFromParts(1, 2), 0), 0, 100, 6},
@@ -268,9 +266,9 @@ func TestChecksumNext(t *testing.T) {
 	txn := s.WriteTxn(1)
 	txn.SetCuratorID(123)
 	var part core.PartitionID = 44
-	txn.PutPartition(&pb.Partition{Id: proto.Uint32(uint32(part))})
+	txn.PutPartition(&fb.Partition{Id: part})
 	for i := 1000; i < 2000; i++ {
-		txn.PutBlob(core.BlobIDFromParts(part, core.BlobKey(i)), &pb.Blob{Repl: proto.Uint32(3)})
+		txn.PutBlob(core.BlobIDFromParts(part, core.BlobKey(i)), &fb.Blob{Repl: 3})
 	}
 	txn.Commit()
 

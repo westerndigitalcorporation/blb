@@ -79,8 +79,8 @@ func TestTSAllocationForExtend(t *testing.T) {
 	<-mc.heartbeatChan
 
 	// Add two hosts.
-	c.addTS(0, "host0")
-	c.addTS(1, "host1")
+	c.addTS(100, "host0")
+	c.addTS(101, "host1")
 
 	// Ask to allocate three. Should fail.
 	addrs, ids := c.allocateTS(3, nil, nil)
@@ -89,7 +89,7 @@ func TestTSAllocationForExtend(t *testing.T) {
 	}
 
 	// Add one more host and try again. Should succeed.
-	c.addTS(2, "host2")
+	c.addTS(102, "host2")
 	addrs, ids = c.allocateTS(3, nil, nil)
 	if len(addrs) != 3 || len(ids) != 3 {
 		t.Fatalf("failed to allocate hosts")
@@ -97,11 +97,11 @@ func TestTSAllocationForExtend(t *testing.T) {
 }
 
 // Allocation for rerepl should work in various situations. The basic setup is
-// that hosts 0-2 used to host replicas for a tract but host 2 went down. Host 3
+// that hosts 1-3 used to host replicas for a tract but host 3 went down. Host 4
 // is available as a replacement but we change its failure domains to see if the
 // algorithm can pick it up.
 func TestTSAllocationForRerepl(t *testing.T) {
-	h := "host3"
+	h := "host4"
 	domains := [][]string{
 		{h, "domain3"}, // A distinct domain.
 		{h, "domain2"}, // Same as the bad host.
@@ -117,7 +117,7 @@ func TestTSAllocationForRerepl(t *testing.T) {
 
 		// Add three hosts, each of which belongs to a distinct failure
 		// domain. They are assumed to host replicas of a tract.
-		for i := 0; i < 3; i++ {
+		for i := 1; i < 4; i++ {
 			host := fmt.Sprintf("host%d", i)
 			fds.put(host, []string{host, fmt.Sprintf("domain%d", i)})
 			c.addTS(core.TractserverID(i), host)
@@ -125,16 +125,16 @@ func TestTSAllocationForRerepl(t *testing.T) {
 
 		// Add another host with the given 'domain'.
 		fds.put(h, domain)
-		c.addTS(3, h)
+		c.addTS(4, h)
 
 		// Assume host 2 went down. To replace it, the curator should
 		// pick host 3.
-		addrs, ids := c.allocateTS(1, []core.TractserverID{0, 1}, []core.TractserverID{2})
+		addrs, ids := c.allocateTS(1, []core.TractserverID{1, 2}, []core.TractserverID{3})
 		if len(addrs) != 1 || len(ids) != 1 {
 			t.Fatalf("failed to allocate hosts")
 		}
-		if ids[0] != 3 {
-			t.Fatalf("should have picked host3 but picked host%d", ids[0])
+		if ids[0] != 4 {
+			t.Fatalf("should have picked host4 but picked host%d", ids[0])
 		}
 	}
 }
@@ -162,9 +162,9 @@ func TestTSAllocationMultipleLevel(t *testing.T) {
 		addr    string
 		domains []string
 	}{
-		{0, "h0", []string{"h0", "a0", "b0", "c0"}},
-		{1, "h1", []string{"h1", "a1", "b0", "c0"}},
-		{2, "h2", []string{"h2", "a2", "b1", "c0"}},
+		{100, "h0", []string{"h0", "a0", "b0", "c0"}},
+		{101, "h1", []string{"h1", "a1", "b0", "c0"}},
+		{102, "h2", []string{"h2", "a2", "b1", "c0"}},
 	}
 
 	// Various possible failure domains for h3.
@@ -192,15 +192,15 @@ func TestTSAllocationMultipleLevel(t *testing.T) {
 
 		// Add h3.
 		fds.put("h3", domain)
-		c.addTS(3, "h3")
+		c.addTS(103, "h3")
 
 		// Assume host 2 went down. To replace it, the curator should
 		// pick host 3.
-		addrs, ids := c.allocateTS(1, []core.TractserverID{0, 1}, []core.TractserverID{2})
+		addrs, ids := c.allocateTS(1, []core.TractserverID{100, 101}, []core.TractserverID{102})
 		if len(addrs) != 1 || len(ids) != 1 {
 			t.Fatalf("failed to allocate hosts")
 		}
-		if ids[0] != 3 {
+		if ids[0] != 103 {
 			t.Fatalf("should have picked host3 but picked host%d", ids[0])
 		}
 	}
@@ -229,17 +229,17 @@ func TestAllocationMaxSpread(t *testing.T) {
 		// a0-a9.
 		addr := fmt.Sprintf("a%d", i)
 		fds.put(addr, []string{addr, "d0", "e0", "f0"})
-		c.addTS(core.TractserverID(i), addr)
+		c.addTS(core.TractserverID(i+100), addr)
 
 		// b0-b9.
 		addr = fmt.Sprintf("b%d", i)
 		fds.put(addr, []string{addr, "d1", "e1", "f0"})
-		c.addTS(core.TractserverID(i+10), addr)
+		c.addTS(core.TractserverID(i+110), addr)
 	}
 
 	// c0.
 	fds.put("c0", []string{"c0", "d2", "e1", "f0"})
-	c.addTS(core.TractserverID(100), "c0")
+	c.addTS(core.TractserverID(200), "c0")
 
 	addrs, ids := c.allocateTS(3, nil, nil)
 	if len(addrs) != 3 || len(ids) != 3 {
@@ -285,7 +285,7 @@ func TestAllocationLimitedDomains(t *testing.T) {
 			// The hosts assigned IDs sequentially, and thus 'a'
 			// hosts are in [0, 9], 'b' hosts are in [10, 19], and
 			// 'c' hosts are in [20, 29].
-			c.addTS(core.TractserverID(10*prefix+suffix), addr)
+			c.addTS(core.TractserverID(10*prefix+suffix+100), addr)
 		}
 	}
 
@@ -293,7 +293,7 @@ func TestAllocationLimitedDomains(t *testing.T) {
 	// belongs to. The mapping described above is straightforward so that we
 	// can just divide the ID by 10 to get the failure domain.
 	whichD := func(id core.TractserverID) int {
-		return int(id) / 10
+		return int(id%100) / 10
 	}
 
 	// Allocation for create should work.
@@ -304,9 +304,9 @@ func TestAllocationLimitedDomains(t *testing.T) {
 
 	// Allocation for rerepl should work.
 	// Assume existing hosts are 5, 18 (belong to d0 and d1).
-	existing := []core.TractserverID{5, 18}
+	existing := []core.TractserverID{105, 118}
 	// Down host is in d2.
-	down := []core.TractserverID{23}
+	down := []core.TractserverID{123}
 	addrs, ids = c.allocateTS(1, existing, down)
 	if len(addrs) != 1 || len(ids) != 1 {
 		t.Fatalf("failed to allocate hosts for rerepl")
@@ -318,7 +318,7 @@ func TestAllocationLimitedDomains(t *testing.T) {
 
 	// Failing d0 and d1 is equivalent to failing all a0-a9 b0-b9 hosts.
 	down = make([]core.TractserverID, 0, 20)
-	for i := 0; i < 20; i++ {
+	for i := 100; i < 120; i++ {
 		down = append(down, core.TractserverID(i))
 	}
 
@@ -335,7 +335,7 @@ func TestAllocationLimitedDomains(t *testing.T) {
 	}
 
 	// Allocation for rerepl should still work.
-	existing = []core.TractserverID{25}
+	existing = []core.TractserverID{125}
 	addrs, ids = c.allocateTS(2, existing, down)
 	if len(addrs) != 2 || len(ids) != 2 {
 		t.Fatalf("failed to allocate hosts for rerepl")

@@ -22,11 +22,11 @@ func (tc *TestCase) TestStorageHint() error {
 	if err != nil {
 		return err
 	}
-	if info.Hint != core.StorageHint_DEFAULT {
-		return fmt.Errorf("wrong storage hint: %s != %s", info.Hint, core.StorageHint_DEFAULT)
+	if info.Hint != core.StorageHintDEFAULT {
+		return fmt.Errorf("wrong storage hint: %s != %s", info.Hint, core.StorageHintDEFAULT)
 	}
-	if info.Class != core.StorageClass_REPLICATED {
-		return fmt.Errorf("wrong storage class: %s != %s", info.Class, core.StorageClass_REPLICATED)
+	if info.Class != core.StorageClassREPLICATED {
+		return fmt.Errorf("wrong storage class: %s != %s", info.Class, core.StorageClassREPLICATED)
 	}
 	if info.Repl != 3 { // default from client library
 		return fmt.Errorf("wrong repl factor: %d != %d", info.Repl, 3)
@@ -41,22 +41,22 @@ func (tc *TestCase) TestStorageHint() error {
 	if err != nil {
 		return err
 	}
-	if info.Hint != core.StorageHint_COLD {
-		return fmt.Errorf("wrong storage hint: %s != %s", info.Hint, core.StorageHint_COLD)
+	if info.Hint != core.StorageHintCOLD {
+		return fmt.Errorf("wrong storage hint: %s != %s", info.Hint, core.StorageHintCOLD)
 	}
 	// created with REPLICATED class even with a separate hint
-	if info.Class != core.StorageClass_REPLICATED {
-		return fmt.Errorf("wrong storage class: %s != %s", info.Class, core.StorageClass_REPLICATED)
+	if info.Class != core.StorageClassREPLICATED {
+		return fmt.Errorf("wrong storage class: %s != %s", info.Class, core.StorageClassREPLICATED)
 	}
 	if info.Repl != 7 {
 		return fmt.Errorf("wrong repl factor: %d != %d", info.Repl, 7)
 	}
 
 	// Try to change things.
-	newMTime := time.Now().Add(-77 * time.Hour)
-	newExp := time.Now().Add(3 * 24 * time.Hour)
+	newMTime := time.Now().Add(-77 * time.Hour).Truncate(time.Second)
+	newExp := time.Now().Add(3 * 24 * time.Hour).Truncate(time.Second)
 	info.MTime = newMTime
-	info.Hint = core.StorageHint_HOT
+	info.Hint = core.StorageHintHOT
 	info.Expires = newExp
 	err = tc.c.SetMetadata(context.Background(), blob.ID(), info)
 	if err != nil {
@@ -65,8 +65,8 @@ func (tc *TestCase) TestStorageHint() error {
 
 	// Stat again.
 	info, err = blob.Stat()
-	if info.Hint != core.StorageHint_HOT {
-		return fmt.Errorf("wrong storage hint: %s != %s", info.Hint, core.StorageHint_HOT)
+	if info.Hint != core.StorageHintHOT {
+		return fmt.Errorf("wrong storage hint: %s != %s", info.Hint, core.StorageHintHOT)
 	}
 	if !info.MTime.Equal(newMTime) {
 		return fmt.Errorf("wrong mtime: %s != %s", info.MTime, newMTime)

@@ -14,7 +14,7 @@ import (
 	test "github.com/westerndigitalcorporation/blb/pkg/testutil"
 )
 
-const defHint = core.StorageHint_DEFAULT
+const defHint = core.StorageHintDEFAULT
 
 // Returns a StateHandler with default configuration running single-node raft.
 func newTestHandler(t *testing.T) *StateHandler {

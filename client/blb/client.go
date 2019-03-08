@@ -605,7 +605,7 @@ func (cli *Client) writeAt(ctx context.Context, id core.BlobID, b []byte, offset
 	// Can only write to replicated blobs. We shouldn't get here, since the
 	// curator should return an error to the initial GetTracts call, but this is
 	// here for defense in depth.
-	if info.Class != core.StorageClass_REPLICATED {
+	if info.Class != core.StorageClassREPLICATED {
 		return 0, core.ErrReadOnlyStorageClass
 	}
 
@@ -1430,5 +1430,5 @@ func priorityFromContext(ctx context.Context) core.Priority {
 	if pri, ok := ctx.Value(priorityKey).(core.Priority); ok {
 		return pri
 	}
-	return core.Priority_TSDEFAULT
+	return core.PriorityTSDEFAULT
 }

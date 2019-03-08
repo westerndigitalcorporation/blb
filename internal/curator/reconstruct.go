@@ -7,6 +7,7 @@ import (
 	log "github.com/golang/glog"
 
 	"github.com/westerndigitalcorporation/blb/internal/core"
+	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state/fb"
 )
 
 // reconstructChunk sends an RPC to one tractserver asking it to reconstruct the
@@ -18,19 +19,20 @@ func (c *Curator) reconstructChunk(id core.RSChunkID, badIds []core.TractserverI
 		return core.ErrInvalidArgument
 	}
 
-	n := len(chunk.Data)
-	m := len(chunk.Hosts) - n
+	n := chunk.DataLength()
+	m := chunk.HostsLength() - n
 
 	// Figure out what TSIDs we're keeping in the set. Note that this will end
 	// up in the same order as Hosts, data followed by parity.
 	var okIds []core.TractserverID
 	var okIdx, dstIdx []int
-	for idx, id := range chunk.Hosts {
+	for i := 0; i < chunk.HostsLength(); i++ {
+		id := core.TractserverID(chunk.Hosts(i))
 		if contains(badIds, id) {
-			dstIdx = append(dstIdx, idx)
+			dstIdx = append(dstIdx, i)
 		} else {
 			okIds = append(okIds, id)
-			okIdx = append(okIdx, idx)
+			okIdx = append(okIdx, i)
 		}
 	}
 
@@ -86,7 +88,7 @@ func (c *Curator) reconstructChunk(id core.RSChunkID, badIds []core.TractserverI
 	}
 
 	// Commit new hosts.
-	newHosts := chunk.Hosts
+	newHosts := fb.HostsList(chunk)
 	for i, idx := range dstIdx {
 		if idx >= 0 {
 			newHosts[idx] = dstIds[i]

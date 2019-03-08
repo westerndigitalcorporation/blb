@@ -9,7 +9,7 @@ import (
 
 	log "github.com/golang/glog"
 	"github.com/westerndigitalcorporation/blb/internal/core"
-	pb "github.com/westerndigitalcorporation/blb/internal/curator/durable/state/statepb"
+	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state/fb"
 	"github.com/westerndigitalcorporation/blb/internal/curator/storageclass"
 )
 
@@ -22,24 +22,24 @@ const (
 	RSPieceLength = 64*1024*1024 - 64*1024 - 64
 
 	// REPLICATED is just copied here to make some code slightly shorter.
-	REPLICATED = core.StorageClass_REPLICATED
+	REPLICATED = core.StorageClassREPLICATED
 )
 
 // Picks a storage class for the blob. We can change this over time.
-func targetClass(blob *pb.Blob, now int64, delay time.Duration) core.StorageClass {
+func targetClass(blob *fb.BlobF, now int64, delay time.Duration) core.StorageClass {
 	// If the blob has been created or written to recently, keep it replicated.
-	if now-blob.GetMtime() < int64(delay) {
+	if now-blob.Mtime() < int64(delay) {
 		return REPLICATED
 	}
 
 	// Otherwise, look at the hint.
-	switch blob.GetHint() {
-	case core.StorageHint_HOT:
+	switch blob.Hint() {
+	case core.StorageHintHOT:
 		return REPLICATED
-	case core.StorageHint_WARM:
-		return core.StorageClass_RS_6_3
-	case core.StorageHint_COLD:
-		return core.StorageClass_RS_8_3
+	case core.StorageHintWARM:
+		return core.StorageClassRS_6_3
+	case core.StorageHintCOLD:
+		return core.StorageClassRS_8_3
 	}
 
 	return REPLICATED
@@ -58,8 +58,8 @@ func (c *Curator) storageClassLoop() {
 		packers := c.makePackers(term)
 		var cleanedUp, alreadyDone, committed int
 
-		c.stateHandler.ForEachBlob(false, func(id core.BlobID, blob *pb.Blob) {
-			current := blob.GetStorage()
+		c.stateHandler.ForEachBlob(false, func(id core.BlobID, blob *fb.BlobF) {
+			current := blob.Storage()
 			target := targetClass(blob, now, c.config.WriteDelay)
 			if current == target {
 				// The blob is stored correctly. We might need to clean up old
@@ -120,7 +120,7 @@ func (c *Curator) storageClassLoop() {
 
 func (c *Curator) makePackers(term uint64) (ps []*tractPacker) {
 	ctx := &curatorTPContext{c: c, term: term}
-	ps = make([]*tractPacker, len(core.StorageClass_name))
+	ps = make([]*tractPacker, len(core.EnumNamesStorageClass))
 	for _, cls := range storageclass.AllRS {
 		N, M := cls.RSParams()
 		ps[cls.ID()] = makeTractPacker(ctx, c.internalOpM, cls.ID(), N, M, RSPieceLength)
@@ -129,10 +129,12 @@ func (c *Curator) makePackers(term uint64) (ps []*tractPacker) {
 }
 
 // Returns true if any tract in the blob has storage that it doesn't need.
-func hasExtraStorage(blob *pb.Blob, cls core.StorageClass) bool {
-	for _, tract := range blob.Tracts {
+func hasExtraStorage(blob *fb.BlobF, cls core.StorageClass) bool {
+	var tract fb.TractF
+	for i := 0; i < blob.TractsLength(); i++ {
+		blob.Tracts(&tract, i)
 		for _, c := range storageclass.All {
-			if c.ID() != cls && c.Has(tract) {
+			if c.ID() != cls && c.Has(&tract) {
 				return true
 			}
 		}
@@ -141,10 +143,12 @@ func hasExtraStorage(blob *pb.Blob, cls core.StorageClass) bool {
 }
 
 // Returns true if all tracts in the blob support the given storage class.
-func tractsAreStoredAsClass(blob *pb.Blob, cls core.StorageClass) bool {
+func tractsAreStoredAsClass(blob *fb.BlobF, cls core.StorageClass) bool {
 	c := storageclass.Get(cls)
-	for _, tract := range blob.Tracts {
-		if !c.Has(tract) {
+	var tract fb.TractF
+	for i := 0; i < blob.TractsLength(); i++ {
+		blob.Tracts(&tract, i)
+		if !c.Has(&tract) {
 			return false
 		}
 	}
@@ -161,14 +165,16 @@ func (c *Curator) updateStorageClass(id core.BlobID, target core.StorageClass, w
 	wg.Done()
 }
 
-func (c *Curator) addTractsToPacker(id core.BlobID, blob *pb.Blob, packer *tractPacker) {
+func (c *Curator) addTractsToPacker(id core.BlobID, blob *fb.BlobF, packer *tractPacker) {
 	cls := storageclass.Get(packer.cls)
-	for i, t := range blob.Tracts {
-		if cls.Has(t) {
+	var t fb.TractF
+	for i := 0; i < blob.TractsLength(); i++ {
+		blob.Tracts(&t, i)
+		if cls.Has(&t) {
 			continue // Already stored as this class, ignore.
 		}
 		tid := core.TractIDFromParts(id, core.TractKey(i))
-		from := c.tsMon.makeTSAddrs(t.Hosts)
-		packer.addTract(tid, from, t.Version)
+		from := c.tsMon.makeTSAddrs(fb.HostsList(&t))
+		packer.addTract(tid, from, int(t.Version()))
 	}
 }

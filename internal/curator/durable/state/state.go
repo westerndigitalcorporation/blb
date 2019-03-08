@@ -12,13 +12,12 @@ import (
 	"time"
 
 	"github.com/boltdb/bolt"
-	"github.com/golang/protobuf/proto"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	log "github.com/golang/glog"
 	"github.com/westerndigitalcorporation/blb/internal/core"
-	pb "github.com/westerndigitalcorporation/blb/internal/curator/durable/state/statepb"
+	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state/fb"
 	"github.com/westerndigitalcorporation/blb/internal/curator/storageclass"
 	"github.com/westerndigitalcorporation/blb/pkg/failures"
 )
@@ -192,10 +191,8 @@ func (i *BlobIterator) Next() (has bool) {
 
 // Blob returns metadata of the blob pointed by iterator. Only call
 // this if 'Next' returns true.
-func (i *BlobIterator) Blob() (core.BlobID, *pb.Blob) {
-	b := new(pb.Blob)
-	mustUnmarshal(i.v, b)
-	return key2BlobID(i.k), b
+func (i *BlobIterator) Blob() (core.BlobID, *fb.BlobF) {
+	return key2BlobID(i.k), fb.GetRootAsBlobF(i.v, 0)
 }
 
 // RSChunkIterator is used to iterate over RSChunks in state.
@@ -211,10 +208,8 @@ func (i *RSChunkIterator) Next() (has bool) {
 }
 
 // RSChunk returns the chunk pointed by iterator. Only call this if 'Next' returns true.
-func (i *RSChunkIterator) RSChunk() (core.RSChunkID, *pb.RSChunk) {
-	c := new(pb.RSChunk)
-	mustUnmarshal(i.v, c)
-	return key2rschunkID(i.k), c
+func (i *RSChunkIterator) RSChunk() (core.RSChunkID, *fb.RSChunkF) {
+	return key2rschunkID(i.k), fb.GetRootAsRSChunkF(i.v, 0)
 }
 
 // Txn is a transaction object that captures current snapshot of the
@@ -280,30 +275,35 @@ func (t *Txn) Stat(id core.BlobID) (info core.BlobInfo, err core.Error) {
 		return
 	}
 	info = core.BlobInfo{
-		NumTracts: len(blob.Tracts),
-		Repl:      int(blob.GetRepl()),
-		MTime:     time.Unix(0, blob.GetMtime()),
-		ATime:     time.Unix(0, blob.GetAtime()),
-		Class:     blob.GetStorage(),
-		Hint:      blob.GetHint(),
+		NumTracts: blob.TractsLength(),
+		Repl:      blob.Repl(),
+		MTime:     time.Unix(0, blob.Mtime()),
+		ATime:     time.Unix(0, blob.Atime()),
+		Class:     blob.Storage(),
+		Hint:      blob.Hint(),
 	}
-	if blob.GetExpires() != 0 {
-		info.Expires = time.Unix(0, blob.GetExpires())
+	if blob.Expires() != 0 {
+		info.Expires = time.Unix(0, blob.Expires())
 	}
 	return
 }
 
 // PutBlob puts blob metadata into state.
-func (t *Txn) PutBlob(id core.BlobID, blob *pb.Blob) {
+func (t *Txn) PutBlob(id core.BlobID, blob *fb.Blob) {
 	pid := id.Partition()
 	if p := t.GetPartition(pid); p == nil {
 		// Sanity check that the partition of the blob must exist.
 		log.Fatalf("bug: partition of the blob doesn't exist")
 	}
-	t.put(blobBucket, blobID2Key(id), mustMarshal(blob), blobFillPct)
+	t.putBlobEncoded(id, fb.BuildBlob(blob))
 	for _, tract := range blob.Tracts {
 		t.ensureKnownTSIDs(tract.Hosts)
 	}
+}
+
+// putBlobEncoded writes an already-encoded blob into the database.
+func (t *Txn) putBlobEncoded(id core.BlobID, blob []byte) {
+	t.put(blobBucket, blobID2Key(id), blob, blobFillPct)
 }
 
 // DeleteBlob marks a blob as deleted instead of actually deleting it.
@@ -312,8 +312,9 @@ func (t *Txn) DeleteBlob(id core.BlobID, when time.Time) core.Error {
 	if b == nil {
 		return core.ErrNoSuchBlob
 	}
-	b.Deleted = proto.Int64(when.UnixNano())
-	t.PutBlob(id, b)
+	bs := b.ToStruct()
+	bs.Deleted = when.UnixNano()
+	t.PutBlob(id, bs)
 	return core.NoError
 }
 
@@ -323,8 +324,9 @@ func (t *Txn) UndeleteBlob(id core.BlobID) core.Error {
 	if b == nil {
 		return core.ErrNoSuchBlob
 	}
-	b.Deleted = nil
-	t.PutBlob(id, b)
+	bs := b.ToStruct()
+	bs.Deleted = 0
+	t.PutBlob(id, bs)
 	return core.NoError
 }
 
@@ -336,24 +338,26 @@ func (t *Txn) SetBlobMetadata(id core.BlobID, md core.BlobInfo) core.Error {
 	if b == nil {
 		return core.ErrNoSuchBlob
 	}
+	// TODO: add fast path here?
+	bs := b.ToStruct()
 	if !md.MTime.IsZero() {
-		b.Mtime = proto.Int64(md.MTime.UnixNano())
+		bs.Mtime = md.MTime.UnixNano()
 	}
 	if !md.ATime.IsZero() {
-		b.Atime = proto.Int64(md.ATime.UnixNano())
+		bs.Atime = md.ATime.UnixNano()
 	}
 	// Using the zero value to determine presence here means that we can't set a
 	// blob from expiring back to not expiring. As a workaround, set it to
 	// expire in the far future.
 	if !md.Expires.IsZero() {
-		b.Expires = proto.Int64(md.Expires.UnixNano())
+		bs.Expires = md.Expires.UnixNano()
 	}
 	// Using the zero value here means we can't set a blob's hint to "DEFAULT",
 	// since that's interpreted as leaving it alone.
 	if md.Hint != 0 {
-		b.Hint = &md.Hint
+		bs.Hint = md.Hint
 	}
-	t.PutBlob(id, b)
+	t.PutBlob(id, bs)
 	return core.NoError
 }
 
@@ -370,15 +374,51 @@ func (t *Txn) FinishDeleteBlobs(ids []core.BlobID) core.Error {
 	return core.NoError
 }
 
+// ChangeTract changes the version and hosts list for a single tract. The hosts list may
+// not change size, and the version must be exactly one greater than the previous version.
+func (t *Txn) ChangeTract(id core.TractID, version int, hosts []core.TractserverID) core.Error {
+	blob := t.GetBlob(id.Blob)
+	if blob == nil {
+		return core.ErrNoSuchBlob
+	}
+	if int(id.Index) > blob.TractsLength() {
+		return core.ErrNoSuchTract
+	}
+
+	// Use the fast path since we're not changing the number of hosts.
+	buf := fb.CloneBuffer(blob)
+
+	var tract fb.TractF
+	blob.Tracts(&tract, int(id.Index))
+	if tract.HostsLength() != len(hosts) {
+		log.Errorf("ChangeTract can't change number of replicas: %d -> %d", tract.HostsLength(), len(hosts))
+		return core.ErrInvalidArgument
+	}
+	if int(tract.Version())+1 != version {
+		log.Errorf("ChangeTract with invalid new version: %d != (%d+1)", version, tract.Version())
+		return core.ErrConflictingState
+	}
+
+	// Modify the tract within the blob:
+	if !tract.MutateVersion(uint32(version)) || !tract.MutateHostsFromSlice(hosts) {
+		return core.ErrConflictingState
+	}
+	t.putBlobEncoded(id.Blob, buf)
+	t.ensureKnownTSIDs(hosts)
+	return core.NoError
+}
+
 func (t *Txn) removeTractsFromRSChunks(bid core.BlobID) core.Error {
 	blob := t.GetBlobAll(bid)
 	if blob == nil {
 		return core.ErrNoSuchBlob
 	}
-	for k, tract := range blob.Tracts {
+	var tract fb.TractF
+	for k := 0; k < blob.TractsLength(); k++ {
+		blob.Tracts(&tract, k)
 		tid := core.TractIDFromParts(bid, core.TractKey(k))
 		for _, cls := range storageclass.AllRS {
-			if cid := cls.GetRS(tract); cid != nil {
+			if cid := cls.GetRS(&tract); cid.IsValid() {
 				t.removeTractFromRSChunk(cid, tid)
 			}
 		}
@@ -386,13 +426,12 @@ func (t *Txn) removeTractsFromRSChunks(bid core.BlobID) core.Error {
 	return core.NoError
 }
 
-func (t *Txn) removeTractFromRSChunk(cid []byte, tid core.TractID) core.Error {
-	v, ok := t.get(rschunkBucket, cid)
+func (t *Txn) removeTractFromRSChunk(cid core.RSChunkID, tid core.TractID) core.Error {
+	v, ok := t.get(rschunkBucket, rschunkID2Key(cid))
 	if !ok {
 		return core.ErrNoSuchBlob
 	}
-	chunk := new(pb.RSChunk)
-	mustUnmarshal(v, chunk)
+	chunk := fb.GetRootAsRSChunkF(v, 0).ToStruct()
 
 	found := false
 outer:
@@ -413,20 +452,19 @@ outer:
 		return core.ErrNoSuchTract
 	}
 
-	t.put(rschunkBucket, cid, mustMarshal(chunk), rsChunkFillPct)
+	t.put(rschunkBucket, rschunkID2Key(cid), fb.BuildRSChunk(chunk), rsChunkFillPct)
 	return core.NoError
 }
 
 // PutPartition puts a partition into state.
-func (t *Txn) PutPartition(partition *pb.Partition) {
-	t.put(partitionBucket, partitionID2Key(core.PartitionID(partition.GetId())), mustMarshal(partition), defaultFillPct)
+func (t *Txn) PutPartition(partition *fb.Partition) {
+	t.put(partitionBucket, partitionID2Key(core.PartitionID(partition.Id)), fb.BuildPartition(partition), defaultFillPct)
 }
 
 // GetPartitions returns all partitions of this curator.
-func (t *Txn) GetPartitions() (partitions []*pb.Partition) {
+func (t *Txn) GetPartitions() (partitions []*fb.PartitionF) {
 	t.txn.Bucket(partitionBucket).ForEach(func(_, v []byte) error {
-		p := new(pb.Partition)
-		mustUnmarshal(v, p)
+		p := fb.GetRootAsPartitionF(v, 0)
 		partitions = append(partitions, p)
 		return nil
 	})
@@ -434,21 +472,19 @@ func (t *Txn) GetPartitions() (partitions []*pb.Partition) {
 }
 
 // GetPartition returns info of a given partition.
-func (t *Txn) GetPartition(id core.PartitionID) *pb.Partition {
+func (t *Txn) GetPartition(id core.PartitionID) *fb.PartitionF {
 	b, ok := t.get(partitionBucket, partitionID2Key(id))
 	if !ok {
 		return nil
 	}
-	p := new(pb.Partition)
-	mustUnmarshal(b, p)
-	return p
+	return fb.GetRootAsPartitionF(b, 0)
 }
 
 // GetTracts returns tracts of a blob from [start, end), if 'end' is
 // past the last tract of the blob, only the tracts from 'start' to
 // the last one will be returned.
 func (t *Txn) GetTracts(id core.BlobID, start, end int) ([]core.TractInfo, core.StorageClass, core.Error) {
-	cls := core.StorageClass_REPLICATED
+	cls := core.StorageClassREPLICATED
 	// This shouldn't have made it this far but it's worth double-checking
 	// instead of crashing.
 	if start < 0 || end < 0 || end < start {
@@ -459,7 +495,7 @@ func (t *Txn) GetTracts(id core.BlobID, start, end int) ([]core.TractInfo, core.
 	if blob == nil {
 		return nil, cls, core.ErrNoSuchBlob
 	}
-	cls = blob.GetStorage()
+	cls = blob.Storage()
 
 	// Special case: If start == end, we're just checking that the blob exists.
 	if start == end {
@@ -467,25 +503,27 @@ func (t *Txn) GetTracts(id core.BlobID, start, end int) ([]core.TractInfo, core.
 	}
 
 	// Make sure that [start, end) is meaningful and safe.
-	if len(blob.Tracts) == 0 {
+	tractLen := blob.TractsLength()
+	if tractLen == 0 {
 		return nil, cls, core.ErrNoSuchTract
 	}
-	if start >= len(blob.Tracts) {
+	if start >= tractLen {
 		return nil, cls, core.ErrNoSuchTract
 	}
-	if end > len(blob.Tracts) {
-		end = len(blob.Tracts)
+	if end > tractLen {
+		end = tractLen
 	}
 
 	var ret []core.TractInfo
+	var tt fb.TractF
 	for i := start; i < end; i++ {
 		tid := core.TractID{Blob: id, Index: core.TractKey(i)}
-		tt := blob.Tracts[i]
-		tract := core.TractInfo{Tract: tid, Version: tt.Version}
-		if rsp, ok := t.getRSPointer(tt, tid); ok {
+		blob.Tracts(&tt, i)
+		tract := core.TractInfo{Tract: tid, Version: int(tt.Version())}
+		if rsp, ok := t.getRSPointer(&tt, tid); ok {
 			tract.RS = rsp
 		} else {
-			tract.TSIDs = tt.Hosts
+			tract.TSIDs = fb.HostsList(&tt)
 		}
 		ret = append(ret, tract)
 	}
@@ -493,45 +531,47 @@ func (t *Txn) GetTracts(id core.BlobID, start, end int) ([]core.TractInfo, core.
 }
 
 // getRSPointer returns the metadata used by the client to read from an RS-coded tract.
-func (t *Txn) getRSPointer(tract *pb.Tract, tid core.TractID) (core.TractPointer, bool) {
-	var cid []byte
+func (t *Txn) getRSPointer(tract *fb.TractF, tid core.TractID) (core.TractPointer, bool) {
+	var cid core.RSChunkID
 	var clsid core.StorageClass
 	// See if this tract is present in any RS chunks. If it is present in
 	// multiple RS chunks, that means it's being transitioned from one RS class
 	// to another. In that case it doesn't really matter which one we pick, as
 	// long as we pick one.
 	for _, cls := range storageclass.AllRS {
-		if cid = cls.GetRS(tract); cid != nil {
+		if cid = cls.GetRS(tract); cid.IsValid() {
 			clsid = cls.ID()
 			break
 		}
 	}
-	if cid == nil {
+	if !cid.IsValid() {
 		return core.TractPointer{}, false
 	}
-	b, ok := t.get(rschunkBucket, cid)
+	b, ok := t.get(rschunkBucket, rschunkID2Key(cid))
 	if !ok {
 		log.Errorf("[curator] missing rschunk key %v", cid)
 		return core.TractPointer{}, false
 	}
-	var c pb.RSChunk
-	mustUnmarshal(b, &c)
-	return lookupTractInChunk(&c, tid, cid, clsid)
+	return lookupTractInChunk(fb.GetRootAsRSChunkF(b, 0), tid, cid, clsid)
 }
 
-func lookupTractInChunk(c *pb.RSChunk, tid core.TractID, cid []byte, clsid core.StorageClass) (core.TractPointer, bool) {
-	for i, data := range c.Data {
-		for _, tract := range data.Tracts {
-			if tract.Id == tid {
-				id := key2rschunkID(cid)
+func lookupTractInChunk(c *fb.RSChunkF, tid core.TractID, cid core.RSChunkID, clsid core.StorageClass) (core.TractPointer, bool) {
+	var data fb.RSC_DataF
+	var tract fb.RSC_TractF
+	var tidf fb.TractIDF
+	for i := 0; i < c.DataLength(); i++ {
+		c.Data(&data, i)
+		for j := 0; j < data.TractsLength(); j++ {
+			data.Tracts(&tract, j)
+			if tract.Id(&tidf).TractID() == tid {
 				return core.TractPointer{
-					Chunk:      id.Add(i),
-					TSID:       c.Hosts[i],
-					Offset:     tract.GetOffset(),
-					Length:     tract.GetLength(),
+					Chunk:      cid.Add(i),
+					TSID:       core.TractserverID(c.Hosts(i)),
+					Offset:     tract.Offset(),
+					Length:     tract.Length(),
 					Class:      clsid,
-					BaseChunk:  id,
-					OtherTSIDs: c.Hosts,
+					BaseChunk:  cid,
+					OtherTSIDs: fb.HostsList(c),
 				}, true
 			}
 		}
@@ -562,17 +602,16 @@ func (t *Txn) LookupRSPiece(id core.TractID) (core.TractserverID, bool) {
 		return 0, false
 	}
 
-	var chunk pb.RSChunk
-	mustUnmarshal(v, &chunk)
+	chunk := fb.GetRootAsRSChunkF(v, 0)
 
 	// Figure out where within the chunk this piece is.
 	baseID := key2rschunkID(k)
 	myID := key2rschunkID(key)
 	index := int64(myID.ID) - int64(baseID.ID)
-	if index < 0 || index >= int64(len(chunk.Hosts)) {
+	if index < 0 || index >= int64(chunk.HostsLength()) {
 		return 0, false
 	}
-	return chunk.Hosts[index], true
+	return core.TractserverID(chunk.Hosts(int(index))), true
 }
 
 // EncodedTract describes one tract in an RSChunk
@@ -597,15 +636,17 @@ func (t *Txn) PutRSChunk(id core.RSChunkID,
 	cls := storageclass.Get(storage)
 	key := rschunkID2Key(id)
 
-	chunk := pb.RSChunk{
-		Data:  make([]*pb.RSChunk_Data, len(data)),
+	// TODO: we can merge this with fb.BuildRSChunk since this is the only real user
+
+	chunk := fb.RSChunk{
+		Data:  make([]*fb.RSC_Data, len(data)),
 		Hosts: hosts,
 	}
-	blobUpdates := make(map[core.BlobID]*pb.Blob)
+	blobUpdates := make(map[core.BlobID]*fb.Blob)
 	for i, c := range data {
-		ts := make([]*pb.RSChunk_Data_Tract, len(c))
+		ts := make([]*fb.RSC_Tract, len(c))
 		for j, tract := range c {
-			ts[j] = &pb.RSChunk_Data_Tract{
+			ts[j] = &fb.RSC_Tract{
 				Id:     tract.ID,
 				Length: uint32(tract.Length),
 				Offset: uint32(tract.Offset),
@@ -613,28 +654,29 @@ func (t *Txn) PutRSChunk(id core.RSChunkID,
 			bid := tract.ID.Blob
 			blob, ok := blobUpdates[bid]
 			if !ok {
-				blob = t.GetBlob(bid)
-				if blob == nil {
+				blobf := t.GetBlob(bid)
+				if blobf == nil {
 					return core.ErrNoSuchBlob
 				}
+				blob = blobf.ToStruct()
 				blobUpdates[bid] = blob
 			}
 			if int(tract.ID.Index) >= len(blob.Tracts) {
 				return core.ErrNoSuchTract
 			}
 			st := blob.Tracts[tract.ID.Index]
-			if err := cls.Set(st, key); err != core.NoError {
+			if err := cls.Set(st, id); err != core.NoError {
 				return err
 			}
 			st.Version = tract.NewVersion
 		}
-		chunk.Data[i] = &pb.RSChunk_Data{Tracts: ts}
+		chunk.Data[i] = &fb.RSC_Data{Tracts: ts}
 	}
 	// Write chunk.
-	t.put(rschunkBucket, key, mustMarshal(&chunk), rsChunkFillPct)
+	t.put(rschunkBucket, key, fb.BuildRSChunk(&chunk), rsChunkFillPct)
 	// Write new blobs.
 	for bid, blob := range blobUpdates {
-		t.put(blobBucket, blobID2Key(bid), mustMarshal(blob), blobFillPct)
+		t.put(blobBucket, blobID2Key(bid), fb.BuildBlob(blob), blobFillPct)
 	}
 	// Update TSIDs.
 	t.ensureKnownTSIDs(hosts)
@@ -647,11 +689,17 @@ func (t *Txn) UpdateRSHosts(id core.RSChunkID, hosts []core.TractserverID) core.
 	if c == nil {
 		return core.ErrInvalidArgument
 	}
-	if len(c.Hosts) != len(hosts) {
+	if c.HostsLength() != len(hosts) {
 		return core.ErrInvalidArgument
 	}
-	c.Hosts = hosts
-	t.put(rschunkBucket, rschunkID2Key(id), mustMarshal(c), rsChunkFillPct)
+	// Use fast path since we're not changing the number of hosts.
+	buf := fb.CloneBuffer(c)
+	for i, h := range hosts {
+		if !c.MutateHosts(i, uint32(h)) {
+			return core.ErrInvalidState
+		}
+	}
+	t.put(rschunkBucket, rschunkID2Key(id), buf, rsChunkFillPct)
 	t.ensureKnownTSIDs(hosts)
 	return core.NoError
 }
@@ -666,12 +714,18 @@ func (t *Txn) UpdateStorageClass(id core.BlobID, storage core.StorageClass) core
 
 	targetCls := storageclass.Get(storage)
 
-	for _, tract := range blob.Tracts {
-		// Double-check that this is valid.
-		if !targetCls.Has(tract) {
+	// Double-check that this is valid.
+	var tract fb.TractF
+	for i := 0; i < blob.TractsLength(); i++ {
+		blob.Tracts(&tract, i)
+		if !targetCls.Has(&tract) {
 			return core.ErrInvalidArgument
 		}
-		// Clear the others.
+	}
+
+	// Clear the others.
+	bs := blob.ToStruct()
+	for _, tract := range bs.Tracts {
 		for _, cls := range storageclass.All {
 			if cls.ID() != storage {
 				cls.Clear(tract)
@@ -679,8 +733,8 @@ func (t *Txn) UpdateStorageClass(id core.BlobID, storage core.StorageClass) core
 		}
 	}
 
-	blob.Storage = &storage
-	t.PutBlob(id, blob)
+	bs.Storage = storage
+	t.PutBlob(id, bs)
 	return core.NoError
 }
 
@@ -704,9 +758,9 @@ func (t *Txn) GetRSChunkIterator(start core.RSChunkID) (it *RSChunkIterator, has
 
 // GetBlob returns a blob given its blob ID. It will only
 // return if the blob exists and is not marked as deleted.
-func (t *Txn) GetBlob(id core.BlobID) *pb.Blob {
+func (t *Txn) GetBlob(id core.BlobID) *fb.BlobF {
 	b := t.GetBlobAll(id)
-	if b == nil || b.GetDeleted() != 0 {
+	if b == nil || b.Deleted() != 0 {
 		// Do not return blob which is marked as deleted.
 		return nil
 	}
@@ -715,25 +769,21 @@ func (t *Txn) GetBlob(id core.BlobID) *pb.Blob {
 
 // GetBlobAll is like GetBlob, but also returns blob that is marked as
 // deleted.
-func (t *Txn) GetBlobAll(id core.BlobID) *pb.Blob {
+func (t *Txn) GetBlobAll(id core.BlobID) *fb.BlobF {
 	b, ok := t.get(blobBucket, blobID2Key(id))
 	if !ok {
 		return nil
 	}
-	blob := new(pb.Blob)
-	mustUnmarshal(b, blob)
-	return blob
+	return fb.GetRootAsBlobF(b, 0)
 }
 
 // GetRSChunk returns an RS chunk given its ID.
-func (t *Txn) GetRSChunk(id core.RSChunkID) *pb.RSChunk {
+func (t *Txn) GetRSChunk(id core.RSChunkID) *fb.RSChunkF {
 	c, ok := t.get(rschunkBucket, rschunkID2Key(id))
 	if !ok {
 		return nil
 	}
-	chunk := new(pb.RSChunk)
-	mustUnmarshal(c, chunk)
-	return chunk
+	return fb.GetRootAsRSChunkF(c, 0)
 }
 
 // UpdateTime is an instruction to update one blob's mtime/atime.
@@ -747,13 +797,22 @@ type UpdateTime struct {
 func (t *Txn) BatchUpdateTimes(updates []UpdateTime) {
 	for _, update := range updates {
 		if blob := t.GetBlob(update.Blob); blob != nil {
-			if update.MTime != 0 && update.MTime > blob.GetMtime() {
-				blob.Mtime = &update.MTime
+			var buf []byte
+			if update.MTime != 0 && update.MTime > blob.Mtime() {
+				if buf == nil {
+					buf = fb.CloneBuffer(blob)
+				}
+				blob.MutateMtime(update.MTime)
 			}
-			if update.ATime != 0 && update.ATime > blob.GetAtime() {
-				blob.Atime = &update.ATime
+			if update.ATime != 0 && update.ATime > blob.Atime() {
+				if buf == nil {
+					buf = fb.CloneBuffer(blob)
+				}
+				blob.MutateAtime(update.ATime)
 			}
-			t.PutBlob(update.Blob, blob)
+			if buf != nil {
+				t.putBlobEncoded(update.Blob, buf)
+			}
 		}
 	}
 }
@@ -766,15 +825,17 @@ func (t *Txn) CreateTSIDCache() core.Error {
 	}
 
 	// Scan all blobs and chunks (this may take a while but we only have to do it once).
+	var tract fb.TractF
 	for it, has := t.GetIterator(0); has; has = it.Next() {
 		_, blob := it.Blob()
-		for _, tract := range blob.Tracts {
-			t.ensureKnownTSIDs(tract.Hosts)
+		for i := 0; i < blob.TractsLength(); i++ {
+			blob.Tracts(&tract, i)
+			t.ensureKnownTSIDsFB(&tract)
 		}
 	}
 	for it, has := t.GetRSChunkIterator(core.RSChunkID{}); has; has = it.Next() {
 		_, chunk := it.RSChunk()
-		t.ensureKnownTSIDs(chunk.Hosts)
+		t.ensureKnownTSIDsFB(chunk)
 	}
 
 	// Write record.
@@ -796,6 +857,15 @@ func (t *Txn) GetKnownTSIDs() ([]core.TractserverID, core.Error) {
 // this transaction.
 func (t *Txn) ensureKnownTSIDs(hosts []core.TractserverID) {
 	for _, h := range hosts {
+		t.newTSIDs = t.newTSIDs.Set(h)
+	}
+}
+
+// ensureKnownTSIDsFB marks the TSIDs in the given HostLister to be merged into
+// the cached set with this transaction.
+func (t *Txn) ensureKnownTSIDsFB(hl fb.HostsLister) {
+	for i := 0; i < hl.HostsLength(); i++ {
+		h := core.TractserverID(hl.Hosts(i))
 		t.newTSIDs = t.newTSIDs.Set(h)
 	}
 }

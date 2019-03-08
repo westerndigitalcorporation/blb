@@ -4,12 +4,10 @@
 package durable
 
 import (
-	"github.com/golang/protobuf/proto"
-
 	log "github.com/golang/glog"
 	"github.com/westerndigitalcorporation/blb/internal/core"
 	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state"
-	pb "github.com/westerndigitalcorporation/blb/internal/curator/durable/state/statepb"
+	"github.com/westerndigitalcorporation/blb/internal/curator/durable/state/fb"
 	"github.com/westerndigitalcorporation/blb/pkg/raft/raft"
 )
 
@@ -134,9 +132,9 @@ func addPartition(id core.PartitionID, txn *state.Txn) core.Error {
 		// Don't add a partition twice, but let the layer above choose how to error.
 		return core.ErrAlreadyExists
 	}
-	txn.PutPartition(&pb.Partition{
-		Id:          proto.Uint32(uint32(id)),
-		NextBlobKey: proto.Uint32(1),
+	txn.PutPartition(&fb.Partition{
+		Id:          id,
+		NextBlobKey: 1,
 	})
 	return core.NoError
 }
@@ -187,10 +185,10 @@ func (cmd SyncPartitionsCommand) apply(txn *state.Txn) SyncPartitionsResult {
 // Creates a new blob in a partition that has space for it and returns it.
 func (cmd CreateBlobCommand) apply(txn *state.Txn) CreateBlobResult {
 	// Find the non-full partition with the lowest id to create the blob in.
-	var partition *pb.Partition
+	var partition *fb.Partition
 	for _, p := range txn.GetPartitions() {
-		if p.GetNextBlobKey() != core.MaxBlobKey {
-			partition = p
+		if p.NextBlobKey() != core.MaxBlobKey {
+			partition = p.ToStruct()
 			break
 		}
 	}
@@ -201,21 +199,19 @@ func (cmd CreateBlobCommand) apply(txn *state.Txn) CreateBlobResult {
 	}
 
 	// Update the partition's durable state...
-	key := core.BlobKey(*partition.NextBlobKey)
-	*partition.NextBlobKey++
+	key := core.BlobKey(partition.NextBlobKey)
+	partition.NextBlobKey++
 	txn.PutPartition(partition)
 
 	// Create the blob.
-	ID := core.BlobIDFromParts(core.PartitionID(partition.GetId()), key)
-	blob := pb.Blob{
-		Repl:  proto.Uint32(uint32(cmd.Repl)),
-		Mtime: &cmd.InitialTime,
-		Atime: &cmd.InitialTime,
-		Hint:  &cmd.Hint,
-		// Storage defaults to core.StorageClass_REPLICATED, so leave it out here
-	}
-	if cmd.Expires != 0 {
-		blob.Expires = &cmd.Expires
+	ID := core.BlobIDFromParts(core.PartitionID(partition.Id), key)
+	blob := fb.Blob{
+		Hint:    cmd.Hint,
+		Repl:    cmd.Repl,
+		Mtime:   cmd.InitialTime,
+		Atime:   cmd.InitialTime,
+		Expires: cmd.Expires,
+		// Storage defaults to core.StorageClassREPLICATED, so leave it out here
 	}
 	txn.PutBlob(ID, &blob)
 	return CreateBlobResult{ID: ID, Err: core.NoError}
@@ -251,66 +247,37 @@ func (cmd ExtendBlobCommand) apply(txn *state.Txn) ExtendBlobResult {
 	}
 
 	// The tract key should match the tract count.
-	if int(cmd.FirstTractKey) != len(blob.Tracts) {
+	if int(cmd.FirstTractKey) != blob.TractsLength() {
 		return ExtendBlobResult{Err: core.ErrExtendConflict}
 	}
 
 	// Make sure the user paid attention to the replication factor.
 	for _, h := range cmd.Hosts {
-		if len(h) != int(blob.GetRepl()) {
+		if len(h) != blob.Repl() {
 			return ExtendBlobResult{Err: core.ErrInvalidArgument}
 		}
 	}
 
 	// Add the tracts.
+	bs := blob.ToStruct()
 	for _, hosts := range cmd.Hosts {
-		// Add one tract to the blob.
-		blob.Tracts = append(blob.Tracts, &pb.Tract{
+		// Add one tract to the bs.
+		bs.Tracts = append(bs.Tracts, &fb.Tract{
 			Hosts:   hosts,
 			Version: 1,
 		})
 	}
 
 	// Put the modified metadata back.
-	txn.PutBlob(cmd.ID, blob)
+	txn.PutBlob(cmd.ID, bs)
 
-	return ExtendBlobResult{Err: core.NoError, NewSize: len(blob.Tracts)}
+	return ExtendBlobResult{Err: core.NoError, NewSize: len(bs.Tracts)}
 }
 
 // Change the repl group of a tract. Tract versions can only increase by one from their current
 // version to allow only one successful request to increase the version number per version number.
-func (cmd ChangeTractCommand) apply(txn *state.Txn) ChangeTractResult {
-	blob := txn.GetBlob(cmd.ID.Blob)
-	if blob == nil {
-		return ChangeTractResult{Err: core.ErrNoSuchBlob}
-	}
-
-	if int(cmd.ID.Index) > len(blob.Tracts) {
-		return ChangeTractResult{Err: core.ErrNoSuchTract}
-	}
-
-	tract := blob.Tracts[cmd.ID.Index]
-	if len(tract.Hosts) != len(cmd.NewHosts) {
-		log.Errorf("ChangeTract can't change number of replicas: %d -> %d", len(tract.Hosts), len(cmd.NewHosts))
-		return ChangeTractResult{Err: core.ErrInvalidArgument}
-	}
-	if tract.Version+1 != cmd.NewVersion {
-		log.Errorf("ChangeTract with invalid new version: %d != (%d+1)", cmd.NewVersion, tract.Version)
-		return ChangeTractResult{Err: core.ErrConflictingState}
-	}
-
-	tract.Version++
-	tract.Hosts = cmd.NewHosts
-	blob.Tracts[cmd.ID.Index] = tract
-	// Put the modified metadata back.
-	txn.PutBlob(cmd.ID.Blob, blob)
-
-	info := core.TractInfo{
-		Tract:   cmd.ID,
-		Version: tract.Version,
-		TSIDs:   tract.Hosts,
-	}
-	return ChangeTractResult{Err: core.NoError, Info: info}
+func (cmd ChangeTractCommand) apply(txn *state.Txn) core.Error {
+	return txn.ChangeTract(cmd.ID, cmd.NewVersion, cmd.NewHosts)
 }
 
 // Update mtime/atime for a batch of blobs.
@@ -321,10 +288,10 @@ func (cmd UpdateTimesCommand) apply(txn *state.Txn) core.Error {
 
 // Allocate a range of RSChunkIDs.
 func (cmd AllocateRSChunkIDsCommand) apply(txn *state.Txn) AllocateRSChunkIDsResult {
-	var part *pb.Partition
+	var part *fb.Partition
 	for _, p := range txn.GetPartitions() {
-		if p.GetNextRsChunkKey()+uint64(cmd.N) <= core.MaxRSChunkKey {
-			part = p
+		if p.NextRsChunkKey()+uint64(cmd.N) <= core.MaxRSChunkKey {
+			part = p.ToStruct()
 			break
 		}
 	}
@@ -333,15 +300,15 @@ func (cmd AllocateRSChunkIDsCommand) apply(txn *state.Txn) AllocateRSChunkIDsRes
 		return AllocateRSChunkIDsResult{Err: core.ErrGenBlobID}
 	}
 
-	key := part.GetNextRsChunkKey()
+	key := part.NextRsChunkKey
 	if key == 0 {
 		key = 1
 	}
-	part.NextRsChunkKey = proto.Uint64(key + uint64(cmd.N))
+	part.NextRsChunkKey = key + uint64(cmd.N)
 	txn.PutPartition(part)
 
 	return AllocateRSChunkIDsResult{
-		ID: core.RSChunkID{Partition: core.PartitionID(uint32(core.RSPartition<<30) | *part.Id), ID: key},
+		ID: core.RSChunkID{Partition: core.PartitionID(core.RSPartition<<30) | part.Id, ID: key},
 	}
 }
 

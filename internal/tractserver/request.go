@@ -30,9 +30,9 @@ const (
 // Maps priority from RPC values to our own scale.
 func mapPriority(pri core.Priority) Priority {
 	switch pri {
-	case core.Priority_LOW:
+	case core.PriorityLOW:
 		return LowPri
-	case core.Priority_HIGH:
+	case core.PriorityHIGH:
 		return HighPri
 	}
 	return MedPri

@@ -82,7 +82,7 @@ func TestAddPartition(t *testing.T) {
 	if len(partitions) != 1 {
 		t.Errorf("expected no partitions")
 	}
-	if partitions[0].GetId() != 7 {
+	if partitions[0].Id() != 7 {
 		t.Fatalf("wrong id for our partition")
 	}
 }
@@ -114,7 +114,7 @@ func TestSyncPartitions(t *testing.T) {
 
 	// Verify the values.
 	for _, part := range partitions {
-		if part.GetId() != 7 && part.GetId() != 2001 {
+		if part.Id() != 7 && part.Id() != 2001 {
 			t.Fatalf("wrong id for our partition")
 		}
 	}
@@ -154,8 +154,8 @@ func TestCreateBlob(t *testing.T) {
 	}
 
 	// Reach in and change the partition's state
-	p := txn.GetPartitions()[0]
-	*p.NextBlobKey = core.MaxBlobKey
+	p := txn.GetPartitions()[0].ToStruct()
+	p.NextBlobKey = core.MaxBlobKey
 	txn.PutPartition(p)
 
 	if createCmd.apply(txn).Err == core.NoError {
@@ -190,8 +190,8 @@ func TestPartitionAllocation(t *testing.T) {
 			t.Fatalf("error adding a partition")
 		}
 
-		p := txn.GetPartitions()[i]
-		*p.NextBlobKey = core.MaxBlobKey
+		p := txn.GetPartitions()[i].ToStruct()
+		p.NextBlobKey = core.MaxBlobKey
 		txn.PutPartition(p)
 	}
 
@@ -201,8 +201,8 @@ func TestPartitionAllocation(t *testing.T) {
 		t.Fatalf("error adding a partition")
 	}
 
-	p := txn.GetPartitions()[23]
-	*p.NextBlobKey = 100
+	p := txn.GetPartitions()[23].ToStruct()
+	p.NextBlobKey = 100
 	txn.PutPartition(p)
 
 	// Create should work in the non-full partition.
@@ -232,8 +232,8 @@ func TestExtendNoSuchBlob(t *testing.T) {
 			t.Fatalf("error adding a partition")
 		}
 
-		p := txn.GetPartitions()[i]
-		*p.NextBlobKey = core.MaxBlobKey
+		p := txn.GetPartitions()[i].ToStruct()
+		p.NextBlobKey = core.MaxBlobKey
 		txn.PutPartition(p)
 	}
 
@@ -617,14 +617,14 @@ func TestChangeTract(t *testing.T) {
 
 	// This blob doesn't exist.
 	cmd := ChangeTractCommand{ID: core.TractID{Blob: 1, Index: core.TractKey(1)}, NewVersion: 2}
-	if res := cmd.apply(txn); res.Err == core.NoError {
+	if err := cmd.apply(txn); err == core.NoError {
 		t.Errorf("change should have failed, didn't")
 	}
 
 	// This blob exists, but this tract doesn't exist.
 	blob := CreateBlobCommand{Repl: 2}.apply(txn)
 	cmd.ID.Blob = blob.ID
-	if res := cmd.apply(txn); res.Err == core.NoError {
+	if err := cmd.apply(txn); err == core.NoError {
 		t.Errorf("change didn't fail but tract doesn't exist")
 	}
 
@@ -642,7 +642,7 @@ func TestChangeTract(t *testing.T) {
 	cmd.NewHosts = []core.TractserverID{4, 5}
 	// Right version.
 	cmd.NewVersion = 2
-	if res := cmd.apply(txn); res.Err != core.NoError {
+	if err := cmd.apply(txn); err != core.NoError {
 		t.Errorf("change should have not failed")
 	}
 }
