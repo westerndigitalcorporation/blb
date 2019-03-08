@@ -35,14 +35,14 @@ type putRSChunkArgs struct {
 	data    [][]EncodedTract
 }
 
-func makeState(t *testing.T, id core.CuratorID, parts []fb.Partition, blobs map[core.BlobID]fb.Blob,
+func makeState(t *testing.T, id core.CuratorID, parts map[core.PartitionID]fb.Partition, blobs map[core.BlobID]fb.Blob,
 	chunks []putRSChunkArgs) (s *State) {
 
 	s = getTestState(t)
 	txn := s.WriteTxn(1)
 	txn.SetCuratorID(id)
-	for _, p := range parts {
-		txn.PutPartition(&p)
+	for pid, p := range parts {
+		txn.PutPartition(pid, &p)
 	}
 	for bid, blob := range blobs {
 		txn.PutBlob(bid, &blob)
@@ -76,24 +76,24 @@ func TestChecksum(t *testing.T) {
 		makeState(t, 2, nil, nil, nil),
 		// 2
 		makeState(t, 1,
-			[]fb.Partition{
-				{Id: 1, NextBlobKey: 1},
+			map[core.PartitionID]fb.Partition{
+				1: {NextBlobKey: 1},
 			},
 			nil,
 			nil,
 		),
 		// 3
 		makeState(t, 1,
-			[]fb.Partition{
-				{Id: 2, NextBlobKey: 1},
+			map[core.PartitionID]fb.Partition{
+				2: {NextBlobKey: 1},
 			},
 			nil,
 			nil,
 		),
 		// 4
 		makeState(t, 1,
-			[]fb.Partition{
-				{Id: 1, NextBlobKey: 1},
+			map[core.PartitionID]fb.Partition{
+				1: {NextBlobKey: 1},
 			},
 			map[core.BlobID]fb.Blob{
 				core.BlobIDFromParts(1, 1): {Repl: 3},
@@ -102,8 +102,8 @@ func TestChecksum(t *testing.T) {
 		),
 		// 5
 		makeState(t, 1,
-			[]fb.Partition{
-				{Id: 1, NextBlobKey: 2},
+			map[core.PartitionID]fb.Partition{
+				1: {NextBlobKey: 2},
 			},
 			map[core.BlobID]fb.Blob{
 				core.BlobIDFromParts(1, 1): {Repl: 3},
@@ -112,8 +112,8 @@ func TestChecksum(t *testing.T) {
 		),
 		// 6
 		makeState(t, 1,
-			[]fb.Partition{
-				{Id: 1, NextBlobKey: 2},
+			map[core.PartitionID]fb.Partition{
+				1: {NextBlobKey: 2},
 			},
 			map[core.BlobID]fb.Blob{
 				core.BlobIDFromParts(1, 1): {Repl: 3, Tracts: []*fb.Tract{
@@ -124,8 +124,8 @@ func TestChecksum(t *testing.T) {
 		),
 		// 7
 		makeState(t, 1,
-			[]fb.Partition{
-				{Id: 1, NextBlobKey: 2},
+			map[core.PartitionID]fb.Partition{
+				1: {NextBlobKey: 2},
 			},
 			map[core.BlobID]fb.Blob{
 				core.BlobIDFromParts(1, 1): {Repl: 3, Tracts: []*fb.Tract{
@@ -137,8 +137,8 @@ func TestChecksum(t *testing.T) {
 		),
 		// 8
 		makeState(t, 1,
-			[]fb.Partition{
-				{Id: 1, NextBlobKey: 3},
+			map[core.PartitionID]fb.Partition{
+				1: {NextBlobKey: 3},
 			},
 			map[core.BlobID]fb.Blob{
 				core.BlobIDFromParts(1, 1): {Repl: 3, Tracts: []*fb.Tract{
@@ -154,9 +154,9 @@ func TestChecksum(t *testing.T) {
 		),
 		// 9
 		makeState(t, 1,
-			[]fb.Partition{
-				{Id: 1, NextBlobKey: 3},
-				{Id: 2, NextBlobKey: 4},
+			map[core.PartitionID]fb.Partition{
+				1: {NextBlobKey: 3},
+				2: {NextBlobKey: 4},
 			},
 			map[core.BlobID]fb.Blob{
 				core.BlobIDFromParts(1, 1): {Repl: 3, Tracts: []*fb.Tract{
@@ -183,8 +183,8 @@ func TestChecksum(t *testing.T) {
 		),
 		// 10 (partitions and blobs same as 7)
 		makeState(t, 1,
-			[]fb.Partition{
-				{Id: 1, NextBlobKey: 3},
+			map[core.PartitionID]fb.Partition{
+				1: {NextBlobKey: 3},
 			},
 			map[core.BlobID]fb.Blob{
 				core.BlobIDFromParts(1, 1): {Repl: 3, Tracts: []*fb.Tract{
@@ -213,8 +213,8 @@ func TestChecksum(t *testing.T) {
 		),
 		// 11 (partitions and blobs same as 7, 10)
 		makeState(t, 1,
-			[]fb.Partition{
-				{Id: 1, NextBlobKey: 3},
+			map[core.PartitionID]fb.Partition{
+				1: {NextBlobKey: 3},
 			},
 			map[core.BlobID]fb.Blob{
 				core.BlobIDFromParts(1, 1): {Repl: 3, Tracts: []*fb.Tract{
@@ -266,7 +266,7 @@ func TestChecksumNext(t *testing.T) {
 	txn := s.WriteTxn(1)
 	txn.SetCuratorID(123)
 	var part core.PartitionID = 44
-	txn.PutPartition(&fb.Partition{Id: part})
+	txn.PutPartition(part, &fb.Partition{})
 	for i := 1000; i < 2000; i++ {
 		txn.PutBlob(core.BlobIDFromParts(part, core.BlobKey(i)), &fb.Blob{Repl: 3})
 	}

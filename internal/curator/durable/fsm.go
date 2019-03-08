@@ -130,9 +130,9 @@ func addPartition(id core.PartitionID, txn *state.Txn) core.Error {
 		// Don't add a partition twice, but let the layer above choose how to error.
 		return core.ErrAlreadyExists
 	}
-	txn.PutPartition(&fb.Partition{
-		Id:          id,
-		NextBlobKey: 1,
+	txn.PutPartition(id, &fb.Partition{
+		NextBlobKey:    1,
+		NextRsChunkKey: 1,
 	})
 	return core.NoError
 }
@@ -183,26 +183,27 @@ func (cmd SyncPartitionsCommand) apply(txn *state.Txn) SyncPartitionsResult {
 // Creates a new blob in a partition that has space for it and returns it.
 func (cmd CreateBlobCommand) apply(txn *state.Txn) CreateBlobResult {
 	// Find the non-full partition with the lowest id to create the blob in.
-	var partition *fb.Partition
+	var partition state.PartitionAndID
 	for _, p := range txn.GetPartitions() {
-		if p.NextBlobKey() != core.MaxBlobKey {
-			partition = p.ToStruct()
+		if p.P.NextBlobKey() != core.MaxBlobKey {
+			partition = p
 			break
 		}
 	}
-	if partition == nil {
+	if partition.ID == 0 {
 		// This is not a fatal error. The curator could/should ask for another partition
 		// if memory permits.
 		return CreateBlobResult{Err: core.ErrGenBlobID}
 	}
 
 	// Update the partition's durable state...
-	key := core.BlobKey(partition.NextBlobKey)
-	partition.NextBlobKey++
-	txn.PutPartition(partition)
+	newPart := partition.P.ToStruct()
+	key := newPart.NextBlobKey
+	newPart.NextBlobKey++
+	txn.PutPartition(partition.ID, newPart)
 
 	// Create the blob.
-	ID := core.BlobIDFromParts(core.PartitionID(partition.Id), key)
+	id := core.BlobIDFromParts(partition.ID, key)
 	blob := fb.Blob{
 		Hint:    cmd.Hint,
 		Repl:    cmd.Repl,
@@ -211,8 +212,8 @@ func (cmd CreateBlobCommand) apply(txn *state.Txn) CreateBlobResult {
 		Expires: cmd.Expires,
 		// Storage defaults to core.StorageClassREPLICATED, so leave it out here
 	}
-	txn.PutBlob(ID, &blob)
-	return CreateBlobResult{ID: ID, Err: core.NoError}
+	txn.PutBlob(id, &blob)
+	return CreateBlobResult{ID: id, Err: core.NoError}
 }
 
 // Marks a blob as deleted in the database, but without removing it.
@@ -286,27 +287,25 @@ func (cmd UpdateTimesCommand) apply(txn *state.Txn) core.Error {
 
 // Allocate a range of RSChunkIDs.
 func (cmd AllocateRSChunkIDsCommand) apply(txn *state.Txn) AllocateRSChunkIDsResult {
-	var part *fb.Partition
+	var partition state.PartitionAndID
 	for _, p := range txn.GetPartitions() {
-		if p.NextRsChunkKey()+uint64(cmd.N) <= core.MaxRSChunkKey {
-			part = p.ToStruct()
+		if p.P.NextRsChunkKey()+uint64(cmd.N) <= core.MaxRSChunkKey {
+			partition = p
 			break
 		}
 	}
-	if part == nil {
+	if partition.ID == 0 {
 		// The curator could/should ask for another partition if memory permits.
 		return AllocateRSChunkIDsResult{Err: core.ErrGenBlobID}
 	}
 
-	key := part.NextRsChunkKey
-	if key == 0 {
-		key = 1
-	}
-	part.NextRsChunkKey = key + uint64(cmd.N)
-	txn.PutPartition(part)
+	newPart := partition.P.ToStruct()
+	key := newPart.NextRsChunkKey
+	newPart.NextRsChunkKey += uint64(cmd.N)
+	txn.PutPartition(partition.ID, newPart)
 
 	return AllocateRSChunkIDsResult{
-		ID: core.RSChunkID{Partition: core.PartitionID(core.RSPartition<<30) | part.Id, ID: key},
+		ID: core.RSChunkID{Partition: core.PartitionID(core.RSPartition<<30) | partition.ID, ID: key},
 	}
 }
 

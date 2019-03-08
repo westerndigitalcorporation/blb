@@ -38,8 +38,8 @@ func TestStateBasics(t *testing.T) {
 	}
 
 	// Create two partitions.
-	txn.PutPartition(&fb.Partition{Id: 1})
-	txn.PutPartition(&fb.Partition{Id: 3})
+	txn.PutPartition(1, &fb.Partition{})
+	txn.PutPartition(3, &fb.Partition{})
 
 	// Create two blobs in partition 1.
 	txn.PutBlob(core.BlobIDFromParts(1, 1), &fb.Blob{Repl: 3})
@@ -56,7 +56,7 @@ func TestStateBasics(t *testing.T) {
 	if len(partitions) != 2 {
 		t.Fatalf("expected to get two partitions")
 	}
-	if partitions[0].Id() != 1 || partitions[1].Id() != 3 {
+	if partitions[0].ID != 1 || partitions[1].ID != 3 {
 		t.Fatalf("unexpected partition IDs returned")
 	}
 	if txn.GetPartition(3) == nil {
@@ -99,8 +99,8 @@ func TestStateBlobIterator(t *testing.T) {
 	txn := s.WriteTxn(1)
 
 	// Create two partitions.
-	txn.PutPartition(&fb.Partition{Id: 1})
-	txn.PutPartition(&fb.Partition{Id: 3})
+	txn.PutPartition(1, &fb.Partition{})
+	txn.PutPartition(3, &fb.Partition{})
 
 	txn.PutBlob(core.BlobIDFromParts(3, 2), &fb.Blob{Repl: 3})
 	txn.PutBlob(core.BlobIDFromParts(3, 1), &fb.Blob{Repl: 3})
@@ -136,7 +136,7 @@ func TestStateReadWriteIsolation(t *testing.T) {
 
 	writeTxn := s.WriteTxn(1)
 	// Create partition 1.
-	writeTxn.PutPartition(&fb.Partition{Id: 1})
+	writeTxn.PutPartition(1, &fb.Partition{})
 	// Create a blob.
 	writeTxn.PutBlob(core.BlobIDFromParts(1, 1), &fb.Blob{Repl: 3})
 
@@ -181,7 +181,7 @@ func TestMultipleWriteTxns(t *testing.T) {
 
 	writeTxn := s.WriteTxn(1)
 	// Create partition 1.
-	writeTxn.PutPartition(&fb.Partition{Id: 1})
+	writeTxn.PutPartition(1, &fb.Partition{})
 	writeTxn.Commit()
 
 	writeTxn = s.WriteTxn(2)
@@ -212,7 +212,7 @@ func TestUpdateTimes(t *testing.T) {
 	defer s.Close()
 
 	txn := s.WriteTxn(1)
-	txn.PutPartition(&fb.Partition{Id: 3})
+	txn.PutPartition(3, &fb.Partition{})
 	txn.PutBlob(core.BlobIDFromParts(3, 1), &fb.Blob{Repl: 3, Mtime: 200e9, Atime: 200e9})
 	txn.PutBlob(core.BlobIDFromParts(3, 2), &fb.Blob{Repl: 3, Mtime: 200e9, Atime: 200e9})
 	txn.Commit()
@@ -337,7 +337,7 @@ func TestDeleteTractFromRSChunk(t *testing.T) {
 	bid := core.BlobIDFromParts(7, 3)
 	tid := core.TractIDFromParts(bid, 0)
 	cid := core.RSChunkID{Partition: 0x80000007, ID: 5}
-	txn.PutPartition(&fb.Partition{Id: 7})
+	txn.PutPartition(7, &fb.Partition{})
 	txn.PutBlob(bid, &fb.Blob{
 		Tracts: []*fb.Tract{
 			{Version: 1},
@@ -378,7 +378,7 @@ func TestGetKnownTSIDs(t *testing.T) {
 	defer s.Close()
 
 	tx := s.WriteTxn(1)
-	tx.PutPartition(&fb.Partition{Id: 1})
+	tx.PutPartition(1, &fb.Partition{})
 	tx.PutBlob(core.BlobIDFromParts(1, 1), &fb.Blob{Repl: 3,
 		Tracts: []*fb.Tract{{Hosts: []core.TractserverID{1, 5, 7}}}})
 	tx.Commit()

@@ -13,7 +13,6 @@ import (
 // TestRoundtripPartition tests BuildPartition and PartitionF.ToStruct.
 func TestRoundtripPartition(t *testing.T) {
 	p := Partition{
-		Id:             123,
 		NextBlobKey:    456,
 		NextRsChunkKey: 789,
 	}

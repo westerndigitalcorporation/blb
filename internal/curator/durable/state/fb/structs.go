@@ -34,7 +34,6 @@ type Blob struct {
 
 // Partition is the struct version of PartitionF.
 type Partition struct {
-	Id             core.PartitionID
 	NextBlobKey    core.BlobKey
 	NextRsChunkKey uint64 // 48 bits of "blob key" and "tract index" in one value
 }
