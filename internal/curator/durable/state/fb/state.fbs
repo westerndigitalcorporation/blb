@@ -4,32 +4,32 @@
 namespace internal.curator.durable.state.fb;
 
 // TractIDF is a 10-byte value that can refer to a tract or an RS chunk, just like common.TractID.
-// Declare it with five two-byte ushorts so flatbuffers doesn't pad for excessive alignment.
+// Declare it with five uint16s so flatbuffers doesn't pad for excessive alignment.
 struct TractIDF {
-  b1: ushort;
-  b2: ushort;
-  b3: ushort;
-  b4: ushort;
-  b5: ushort;
+  b1: uint16;
+  b2: uint16;
+  b3: uint16;
+  b4: uint16;
+  b5: uint16;
 }
 
 // PartitionF holds data about one partition. ID is not strictly necessary since it should
 // always be determined by context, but it makes some code simpler, and there will be very
 // few of these.
 table PartitionF {
-  id: uint;
-  next_blob_key: uint;
-  next_rs_chunk_key: ulong; // 48 bits of "blob key" and "tract index" in one value
+  id: uint32;
+  next_blob_key: uint32;
+  next_rs_chunk_key: uint64; // 48 bits of "blob key" and "tract index" in one value
 }
 
 // TractF holds data about one tract of one blob.
 table TractF {
   // Used for REPLICATED class.
-  hosts012: ulong;  // first three hosts packed into a ulong, 20 bits each
-  hosts3p: [uint];  // hosts beyond the first three
+  hosts012: uint64;  // first three hosts packed into a uint64, 20 bits each
+  hosts3p: [uint32]; // hosts beyond the first three
 
   // Used for all classes.
-  version: uint;
+  version: uint32;
 
   // Used for RS_X classes.
   // There must be exactly one of these for each RS_n_m enum value in
@@ -48,30 +48,30 @@ table BlobF {
   // 1: Client storage hint. Value is core.StorageHint.
   // 2: Replication level. For REPLICATED only.
   // 3: Unused.
-  packed_meta: uint;
+  packed_meta: uint32;
 
   // Storage metadata for each tract.
   tracts: [TractF];
 
   // Time that this blob was deleted, or zero if it is not deleted (unix seconds).
-  deletedsec: uint = 0;
+  deletedsec: uint32 = 0;
 
   // Time of last open for write (unix seconds).
-  mtimesec: uint;
+  mtimesec: uint32;
 
   // Time of last open for read (unix seconds).
-  atimesec: uint;
+  atimesec: uint32;
 
   // Time that this blob can be automatically deleted, or zero if it is permanent
   // (unix seconds).
-  expiressec: uint = 0;
+  expiressec: uint32 = 0;
 }
 
 // RSC_TractF describes one tract inside of an RS chunk.
 struct RSC_TractF {
-  id: TractIDF; // id of tract stored here
-  length: uint; // length of tract data
-  offset: uint; // offset within this piece
+  id: TractIDF;   // id of tract stored here
+  length: uint32; // length of tract data
+  offset: uint32; // offset within this piece
 }
 
 // RSC_DataF describes one RS piece (of an RS chunk). (It's a separate type
@@ -89,5 +89,5 @@ table RSC_DataF {
 // from the lengths of data and hosts.
 table RSChunkF {
   data: [RSC_DataF]; // exactly N values
-  hosts: [uint];     // exactly N+M values
+  hosts: [uint32];   // exactly N+M values
 }

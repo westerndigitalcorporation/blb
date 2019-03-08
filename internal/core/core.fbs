@@ -7,7 +7,7 @@ namespace internal.core;
 // storage class, then all tracts in the blob are encoded with that class.
 // (They may also be encoded with another class at the same time, to allow for
 // transitions beteween classes).
-enum StorageClass : int {
+enum StorageClass : int32 {
 	// Data is fully replicated n times.
 	REPLICATED,
 	// Reed-Solomon N_M, with N data and M parity.
@@ -17,11 +17,11 @@ enum StorageClass : int {
 	RS_12_5,  // 1.417 (but more durability)
 }
 
-// StorageHint is a hint specified by client code about how it intents to use
+// StorageHint is a hint specified by client code about how it intends to use
 // this blob in the future. Blb will use the storage hint in conjunction with
 // usage data that it collects to choose an appropriate storage class for the
 // blob.
-enum StorageHint : int {
+enum StorageHint : int32 {
 	DEFAULT, // Default storage.
 	HOT ,    // Data will be read frequently and might be written to in the future.
 	WARM,    // Data will be read less often and is write-once.
@@ -30,7 +30,7 @@ enum StorageHint : int {
 
 
 // Priority is a hint to the tractserver about how to order operations.
-enum Priority : int {
+enum Priority : int32 {
 	TSDEFAULT, // Let the tractserver use its default (in practice, equal to MEDIUM).
 	LOW,       // Lower priority than most operations (equal to scrubbing priority).
 	MEDIUM,    // Normal priority.
