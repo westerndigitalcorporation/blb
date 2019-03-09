@@ -81,6 +81,9 @@ type Options struct {
 
 	// How the client decides whether to attempt client-side RS reconstruction.
 	ReconstructBehavior ReconstructBehavior
+
+	// Wether client will send backup reads if the primary read is delayed.
+	DisableBackupReads bool
 }
 
 // Client exposes a simple interface to Blb users for requesting services and
@@ -115,6 +118,9 @@ type Client struct {
 
 	// Reconstruct behavior.
 	reconstructState reconstructState
+
+	// Wether to use backup reads or not.
+	backupReadsDisabled bool
 
 	// Metrics we collect.
 	metricOpen           prometheus.Observer
@@ -165,6 +171,7 @@ func newBaseClient(options *Options) *Client {
 		cluster:              options.Cluster,
 		retrier:              retrier,
 		reconstructState:     makeReconstructState(options.ReconstructBehavior),
+		backupReadsDisabled:  options.DisableBackupReads,
 		metricOpen:           clientOpLatenciesSet.WithLabelValues("open", options.Instance),
 		metricCreate:         clientOpLatenciesSet.WithLabelValues("create", options.Instance),
 		metricReadDurations:  clientOpLatenciesSet.WithLabelValues("read", options.Instance),
@@ -1095,7 +1102,11 @@ func (cli *Client) readOneTract(
 	defer sem.Release()
 
 	if len(tract.Hosts) > 0 {
-		cli.readOneTractReplicated(ctx, curAddr, result, tract, thisB, thisOffset)
+		if cli.backupReadsDisabled {
+			cli.readOneTractReplicated(ctx, curAddr, result, tract, thisB, thisOffset)
+		} else {
+			cli.readOneTractWithBackupReplicated(ctx, curAddr, result, tract, thisB, thisOffset)
+		}
 	} else if tract.RS.Present() {
 		cli.readOneTractRS(ctx, curAddr, result, tract, thisB, thisOffset)
 	} else {
@@ -1115,9 +1126,6 @@ func (cli *Client) readOneTractReplicated(
 
 	order := rand.Perm(len(tract.Hosts))
 
-	// Generate a request ID to use for cancelling alternate requests.
-	reqID := core.GenRequestID()
-
 	err := core.ErrAllocHost // default error if none present
 	for _, n := range order {
 		host := tract.Hosts[n]
@@ -1126,13 +1134,8 @@ func (cli *Client) readOneTractReplicated(
 			continue
 		}
 
-		// Compute alternate hosts that will receive backup requests. Pass them along
-		// to the tracserver rpc layer to enable cancellation messages to be sent between
-		// servers.
-		otherHosts := cutSlice(tract.Hosts, n)
-
 		var read int
-		read, err = cli.tractservers.ReadInto(ctx, host, otherHosts, reqID, tract.Tract, tract.Version, thisB, thisOffset)
+		read, err = cli.tractservers.ReadInto(ctx, host, nil, "", tract.Tract, tract.Version, thisB, thisOffset)
 		if err == core.ErrVersionMismatch {
 			badVersionHost = host
 		}
@@ -1161,6 +1164,93 @@ func (cli *Client) readOneTractReplicated(
 
 	log.V(1).Infof("read %s all hosts failed", tract.Tract)
 	*result = tractResult{0, 0, err, badVersionHost}
+}
+
+func (cli *Client) readOneTractWithBackupReplicated(
+	ctx context.Context,
+	curAddr string,
+	result *tractResult,
+	tract *core.TractInfo,
+	thisB []byte,
+	thisOffset int64) {
+
+	var badVersionHost string
+
+	order := rand.Perm(len(tract.Hosts))
+
+	// Generate a request ID to use for cancelling alternate requests.
+	reqID := core.GenRequestID()
+
+	ch := make(chan tractResult)
+	errc := make(chan core.Error)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	err := core.ErrAllocHost // default error if none present
+	for i, n := range order {
+		go func(i, j int) {
+			select {
+			case <-ctx.Done():
+				errc <- core.ErrCanceled
+				return
+			case <-time.After(time.Duration(2*i) * time.Millisecond):
+			}
+			host := tract.Hosts[j]
+			if host == "" {
+				log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[j])
+				return
+			}
+
+			// Compute alternate hosts that will receive backup requests. Pass them along
+			// to the tracserver rpc layer to enable cancellation messages to be sent between
+			// servers. TODO(eric): come up with a better name for this.
+			otherHosts := cutSlice(tract.Hosts, j)
+
+			var read int
+			read, err = cli.tractservers.ReadInto(ctx, host, otherHosts, reqID, tract.Tract, tract.Version, thisB, thisOffset)
+			if err == core.ErrVersionMismatch {
+				badVersionHost = host
+			}
+			if err != core.NoError && err != core.ErrEOF {
+				log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
+				errc <- err
+				// If we failed to read from a TS, report that to the curator. Defer so we can examine
+				// result.err at the end, to see if we succeeded on another or not.
+				defer func(host string, err core.Error) {
+					couldRecover := result.err == core.NoError || result.err == core.ErrEOF
+					go cli.curators.ReportBadTS(context.Background(), curAddr, tract.Tract, host, "read", err, couldRecover)
+				}(host, err)
+				return // try another host
+			}
+			log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
+			// In case of short read, i.e., read < len(thisB), we should
+			// pad the result with 0's. This doesn't need to be done
+			// explicitly if 'thisB' given to us starts to be empty.
+			// However, just in case it's not, we will ensure that by
+			// overwritting untouched bytes with 0's.
+			for i := read; i < len(thisB); i++ {
+				thisB[i] = 0
+			}
+			ch <- tractResult{len(thisB), read, err, badVersionHost}
+			return
+		}(i, n)
+	}
+	// block until one goroutine finishes, or all fail due to errors.
+	nerr := 0
+	for {
+		select {
+		case *result = <-ch:
+			return
+		case err = <-errc:
+			nerr++
+			if nerr == len(order) {
+				log.V(1).Infof("read %s all hosts failed", tract.Tract)
+				*result = tractResult{0, 0, err, badVersionHost}
+				return
+			}
+		}
+	}
+	return // unreachable
 }
 
 func (cli *Client) readOneTractRS(

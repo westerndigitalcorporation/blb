@@ -73,8 +73,9 @@ func (log *tsTraceLog) check(t *testing.T, write bool, addr string, version, len
 // later.
 func newClient(trace tsTraceFunc) *Client {
 	options := Options{
-		DisableRetry: true,
-		DisableCache: true,
+		DisableRetry:       true,
+		DisableCache:       true,
+		DisableBackupReads: true,
 	}
 	cli := newBaseClient(&options)
 	cli.master = newMemMasterConnection([]string{"1", "2", "3"})
