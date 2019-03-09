@@ -101,18 +101,23 @@ func Open(path string) *State {
 	if err != nil {
 		log.Fatalf("Failed to start a transaction: %v", err)
 	}
-	if _, err := tx.CreateBucketIfNotExists(partitionBucket); err != nil {
-		log.Fatalf("Failed to create partition bucket: %v", err)
+
+	// Check if we're starting with an empty db.
+	isNewDb := tx.Bucket(metaBucket) == nil
+
+	for _, bucket := range [][]byte{
+		partitionBucket, blobBucket, rschunkBucket, metaBucket,
+	} {
+		if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
+			log.Fatalf("Failed to create bucket %q: %v", bucket, err)
+		}
 	}
-	if _, err := tx.CreateBucketIfNotExists(blobBucket); err != nil {
-		log.Fatalf("Failed to create blob bucket: %v", err)
+
+	if isNewDb {
+		// If we're starting from scratch, we can use the tsid cache without explicit commands.
+		tx.Bucket(metaBucket).Put(tsidsKey, []byte{})
 	}
-	if _, err := tx.CreateBucketIfNotExists(rschunkBucket); err != nil {
-		log.Fatalf("Failed to create rschunk bucket: %v", err)
-	}
-	if _, err := tx.CreateBucketIfNotExists(metaBucket); err != nil {
-		log.Fatalf("Failed to create id bucket: %v", err)
-	}
+
 	if err := tx.Commit(); err != nil {
 		log.Fatalf("Failed to commit creation of buckets: %v", err)
 	}
@@ -817,40 +822,15 @@ func (t *Txn) BatchUpdateTimes(updates []UpdateTime) {
 	}
 }
 
-// CreateTSIDCache creates the cached TSID record in the database.
-func (t *Txn) CreateTSIDCache() core.Error {
-	if _, ok := t.get(metaBucket, tsidsKey); ok {
-		// Already exists, don't do anything.
-		return core.NoError
-	}
-
-	// Scan all blobs and chunks (this may take a while but we only have to do it once).
-	var tract fb.TractF
-	for it, has := t.GetIterator(0); has; has = it.Next() {
-		_, blob := it.Blob()
-		for i := 0; i < blob.TractsLength(); i++ {
-			blob.Tracts(&tract, i)
-			t.ensureKnownTSIDsFB(&tract)
-		}
-	}
-	for it, has := t.GetRSChunkIterator(core.RSChunkID{}); has; has = it.Next() {
-		_, chunk := it.RSChunk()
-		t.ensureKnownTSIDsFB(chunk)
-	}
-
-	// Write record.
-	t.put(metaBucket, tsidsKey, t.newTSIDs.ToBytes(), defaultFillPct)
-
-	return core.NoError
-}
-
 // GetKnownTSIDs returns all the known TSIDs in the database as a slice.
 // Note that IDs that were added during this transaction may not be returned.
-func (t *Txn) GetKnownTSIDs() ([]core.TractserverID, core.Error) {
+func (t *Txn) GetKnownTSIDs() []core.TractserverID {
 	if cache, ok := t.get(metaBucket, tsidsKey); ok {
-		return tsidbitmapFromBytes(cache).ToSlice(), core.NoError
+		return tsidbitmapFromBytes(cache).ToSlice()
 	}
-	return nil, core.ErrInvalidState
+	// This should always be here since we create it when creating the database.
+	log.Errorf("[curator] missing tsid cache")
+	return nil
 }
 
 // ensureKnownTSIDs marks the given TSIDs to be merged into the cached set with

@@ -391,22 +391,8 @@ func TestGetKnownTSIDs(t *testing.T) {
 	// TODO: should test PutRSChunk and UpdateRSHosts too
 
 	tx = s.ReadOnlyTxn()
-	ids, err := tx.GetKnownTSIDs()
-	if err == core.NoError {
-		t.Errorf("should not have cached tsids yet")
-	}
+	ids := tx.GetKnownTSIDs()
 	tx.Commit()
-
-	tx = s.WriteTxn(3)
-	tx.CreateTSIDCache()
-	tx.Commit()
-
-	tx = s.ReadOnlyTxn()
-	ids, err = tx.GetKnownTSIDs()
-	tx.Commit()
-	if err != core.NoError {
-		t.Errorf("doesn't have tsids")
-	}
 	if !reflect.DeepEqual(ids, []core.TractserverID{1, 5, 7, 9}) {
 		t.Errorf("mismatch: %v", ids)
 	}
@@ -417,11 +403,8 @@ func TestGetKnownTSIDs(t *testing.T) {
 	tx.Commit()
 
 	tx = s.ReadOnlyTxn()
-	ids, err = tx.GetKnownTSIDs()
+	ids = tx.GetKnownTSIDs()
 	tx.Commit()
-	if err != core.NoError {
-		t.Errorf("doesn't have tsids")
-	}
 	if !reflect.DeepEqual(ids, []core.TractserverID{1, 5, 7, 9, 11, 17}) {
 		t.Errorf("mismatch: %v", ids)
 	}
