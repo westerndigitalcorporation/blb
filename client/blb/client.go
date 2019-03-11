@@ -5,7 +5,6 @@ package blb
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"strings"
 	"sync"
@@ -1218,7 +1217,6 @@ func (cli *Client) readOneTractWithBackupReplicated(
 		go func(i, j int) {
 			select {
 			case <-ctx.Done():
-				fmt.Println("cancelled goroutine ", i)
 				errc <- core.ErrCanceled
 				return
 			case <-cli.backupDelay(time.Duration(2*i) * time.Millisecond):
