@@ -66,6 +66,23 @@ func (log *tsTraceLog) check(t *testing.T, write bool, addr string, version, len
 	t.Errorf("trace log missing entry %v %v %v %v %v", write, addr, version, length, off)
 }
 
+// checkRead checks that the specified entry is present and verifies the read host address.
+// The tract id itself is embedded in addr (along with the index of the
+// tractserver), so we don't bother checking id.
+func (log *tsTraceLog) checkRead(t *testing.T, write bool, addr string, version, length int, off int64) {
+	for _, e := range log.log {
+		// Reads randomly pick a host to read from so we don't verify the address.
+		if e.write == write &&
+			e.addr == addr &&
+			e.version == version &&
+			e.length == length &&
+			e.off == off {
+			return
+		}
+	}
+	t.Errorf("trace log missing entry %v %v %v %v %v", write, addr, version, length, off)
+}
+
 // newClient creates a Client suitable for testing. The trace function given
 // should return core.NoError for a read/write to proceed, and something else to
 // inject an error. The disableBackupReads parameter allows the backup read feature
@@ -279,6 +296,7 @@ func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
 	cli, trace := newTracingClient(false)
 	bch := cli.setupBackupClient()
 
+	// Write a blob and check the writes are logged.
 	blob := createBlob(t, cli)
 	blob.Seek(core.TractLength, os.SEEK_SET)
 	p1 := makeData(core.TractLength)
@@ -291,12 +309,11 @@ func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
 	trace.check(t, true, "ts-0000000100000001:0001-1", 1, core.TractLength, 0)
 	trace.check(t, true, "ts-0000000100000001:0001-2", 1, core.TractLength, 0)
 
-	blob.Seek(core.TractLength, os.SEEK_SET)
-
+	// Send a read with backups. And syncronize backup reads using fake time.
 	go func() {
+		blob.Seek(core.TractLength, os.SEEK_SET)
 		p := make([]byte, core.TractLength)
 		n, err := blob.Read(p)
-
 		if err != nil || n != core.TractLength {
 			t.Fatal("error or short read", n, core.TractLength, err)
 		}
@@ -305,9 +322,15 @@ func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
 	bch <- time.Time{}
 	bch <- time.Time{}
 	bch <- time.Time{}
+
+	// TODO(eric): The test was still racy after using the channel approach. If the first
+	// read completes, the other two are cancelled. Perhaps we need to mock the cancel func
+	// as well to disable cancellation?
 	time.Sleep(100 * time.Millisecond)
 
-	trace.check(t, false, "ts-0000000100000001:0001-0", 1, core.TractLength, 0)
+	trace.checkRead(t, false, "ts-0000000100000001:0001-0", 1, core.TractLength, 0)
+	trace.checkRead(t, false, "ts-0000000100000001:0001-1", 1, core.TractLength, 0)
+	trace.checkRead(t, false, "ts-0000000100000001:0001-2", 1, core.TractLength, 0)
 	trace.checkLength(t, 9)
 }
 
