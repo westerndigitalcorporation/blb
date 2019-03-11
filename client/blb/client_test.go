@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/westerndigitalcorporation/blb/pkg/slices"
 
@@ -67,15 +68,16 @@ func (log *tsTraceLog) check(t *testing.T, write bool, addr string, version, len
 
 // newClient creates a Client suitable for testing. The trace function given
 // should return core.NoError for a read/write to proceed, and something else to
-// inject an error.
+// inject an error. The disableBackupReads parameter allows the backup read feature
+// to be turned off when tests only need to send reads to a single tract.
 // Note: this mechanism doesn't provide a way to inject an error into a write
 // _and_ have the write reflected on the tractserver anyway. We can test that
 // later.
-func newClient(trace tsTraceFunc) *Client {
+func newClient(trace tsTraceFunc, disableBackupReads bool) *Client {
 	options := Options{
 		DisableRetry:       true,
 		DisableCache:       true,
-		DisableBackupReads: true,
+		DisableBackupReads: disableBackupReads,
 	}
 	cli := newBaseClient(&options)
 	cli.master = newMemMasterConnection([]string{"1", "2", "3"})
@@ -87,11 +89,13 @@ func newClient(trace tsTraceFunc) *Client {
 // newTracingClient creates a Client suitable for testing. It's connected to a
 // fake master, three fake curators (each responsible for one partition), and as
 // many tractservers as there are tract copies (the fake curator places each
-// copy on a separate fake tractserver). The trace log returned can be used to
-// check the exact calls made to each tractserver.
-func newTracingClient() (*Client, *tsTraceLog) {
+// copy on a separate fake tractserver). The disableBackupReads parameter allows
+// the backup read feature to be turned off when tests only need to send reads to
+// a single tract. The trace log returned can be used to check the exact calls made
+// to each tractserver.
+func newTracingClient(disableBackupReads bool) (*Client, *tsTraceLog) {
 	traceLog := new(tsTraceLog)
-	return newClient(traceLog.add), traceLog
+	return newClient(traceLog.add, disableBackupReads), traceLog
 }
 
 // makeData generates a slightly random byte string of the given length, which
@@ -136,6 +140,13 @@ func testWriteRead(t *testing.T, blob *Blob, length int, off int64) {
 	}
 }
 
+// testWrite does a single write at the given length and offset.
+func testWrite(t *testing.T, blob *Blob, length int, off int64) {
+	blob.Seek(off, os.SEEK_SET)
+	p1 := makeData(length)
+	checkWrite(t, blob, p1)
+}
+
 // testWriteReadInParts does a series of sequential writes at the given length
 // and offset, and then a series of sequential reads, and checks that the data
 // matches.
@@ -163,7 +174,7 @@ func testWriteReadInParts(t *testing.T, blob *Blob, length int, off int64, write
 }
 
 func createClient() *Client {
-	cli, _ := newTracingClient()
+	cli, _ := newTracingClient(true)
 	return cli
 }
 
@@ -207,7 +218,7 @@ func TestWriteReadCrossTractWithOffsetInParts(t *testing.T) {
 }
 
 func TestWriteReadTraced(t *testing.T) {
-	cli, trace := newTracingClient()
+	cli, trace := newTracingClient(true)
 	blob := createBlob(t, cli)
 	testWriteRead(t, blob, 3*core.TractLength+3000000, 2*core.TractLength+2000000)
 
@@ -244,7 +255,7 @@ func TestWriteReadTraced(t *testing.T) {
 }
 
 func TestWriteReadTracedExactlyOneTract(t *testing.T) {
-	cli, trace := newTracingClient()
+	cli, trace := newTracingClient(true)
 	blob := createBlob(t, cli)
 	testWriteRead(t, blob, core.TractLength, core.TractLength)
 
@@ -258,6 +269,48 @@ func TestWriteReadTracedExactlyOneTract(t *testing.T) {
 	trace.checkLength(t, 7)
 }
 
+func (cli *Client) setupBackupClient() chan<- time.Time {
+	bch := make(chan time.Time)
+	cli.backupDelay = func(_ time.Duration) <-chan time.Time { return bch }
+	return bch
+}
+
+func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
+	cli, trace := newTracingClient(false)
+	bch := cli.setupBackupClient()
+
+	blob := createBlob(t, cli)
+	blob.Seek(core.TractLength, os.SEEK_SET)
+	p1 := makeData(core.TractLength)
+	checkWrite(t, blob, p1)
+
+	trace.check(t, true, "ts-0000000100000001:0000-0", 1, 0, 0)
+	trace.check(t, true, "ts-0000000100000001:0000-1", 1, 0, 0)
+	trace.check(t, true, "ts-0000000100000001:0000-2", 1, 0, 0)
+	trace.check(t, true, "ts-0000000100000001:0001-0", 1, core.TractLength, 0)
+	trace.check(t, true, "ts-0000000100000001:0001-1", 1, core.TractLength, 0)
+	trace.check(t, true, "ts-0000000100000001:0001-2", 1, core.TractLength, 0)
+
+	blob.Seek(core.TractLength, os.SEEK_SET)
+
+	go func() {
+		p := make([]byte, core.TractLength)
+		n, err := blob.Read(p)
+
+		if err != nil || n != core.TractLength {
+			t.Fatal("error or short read", n, core.TractLength, err)
+		}
+	}()
+
+	bch <- time.Time{}
+	bch <- time.Time{}
+	bch <- time.Time{}
+	time.Sleep(100 * time.Millisecond)
+
+	trace.check(t, false, "ts-0000000100000001:0001-0", 1, core.TractLength, 0)
+	trace.checkLength(t, 9)
+}
+
 func TestWriteFailSimple(t *testing.T) {
 	fail := func(e tsTraceEntry) core.Error {
 		// All writes to last tractserver fail
@@ -266,7 +319,7 @@ func TestWriteFailSimple(t *testing.T) {
 		}
 		return core.NoError
 	}
-	blob := createBlob(t, newClient(fail))
+	blob := createBlob(t, newClient(fail, true))
 	_, err := blob.Write(makeData(100))
 	if err == nil {
 		t.Errorf("write succeeded when it shouldn't have")
@@ -281,7 +334,7 @@ func TestWriteFailLonger(t *testing.T) {
 		}
 		return core.NoError
 	}
-	blob := createBlob(t, newClient(fail))
+	blob := createBlob(t, newClient(fail, true))
 	_, err := blob.Write(makeData(core.TractLength * 5))
 	if err == nil {
 		t.Errorf("write succeeded when it shouldn't have")
@@ -296,7 +349,7 @@ func TestReadFailover(t *testing.T) {
 		}
 		return core.NoError
 	}
-	cli := newClient(fail)
+	cli := newClient(fail, true)
 	testWriteRead(t, createBlob(t, cli), 3*core.TractLength+8765, 2*core.TractLength+27)
 }
 
@@ -485,7 +538,7 @@ func TestShortRead(t *testing.T) {
 // Test listing blobs.
 func TestListBlobs(t *testing.T) {
 	var blobs, out []string
-	cli := newClient(nil)
+	cli := newClient(nil, true)
 	// create enough to spread across partitions
 	for i := 0; i < 100; i++ {
 		blobs = append(blobs, createBlob(t, cli).ID().String())
