@@ -82,7 +82,7 @@ func TestAddPartition(t *testing.T) {
 	if len(partitions) != 1 {
 		t.Errorf("expected no partitions")
 	}
-	if partitions[0].Id() != 7 {
+	if partitions[0].ID != 7 {
 		t.Fatalf("wrong id for our partition")
 	}
 }
@@ -114,7 +114,7 @@ func TestSyncPartitions(t *testing.T) {
 
 	// Verify the values.
 	for _, part := range partitions {
-		if part.Id() != 7 && part.Id() != 2001 {
+		if part.ID != 7 && part.ID != 2001 {
 			t.Fatalf("wrong id for our partition")
 		}
 	}
@@ -154,9 +154,10 @@ func TestCreateBlob(t *testing.T) {
 	}
 
 	// Reach in and change the partition's state
-	p := txn.GetPartitions()[0].ToStruct()
-	p.NextBlobKey = core.MaxBlobKey
-	txn.PutPartition(p)
+	p := txn.GetPartitions()[0]
+	newPart := p.P.ToStruct()
+	newPart.NextBlobKey = core.MaxBlobKey
+	txn.PutPartition(p.ID, newPart)
 
 	if createCmd.apply(txn).Err == core.NoError {
 		t.Errorf("expected to fail in blob creation")
@@ -190,9 +191,10 @@ func TestPartitionAllocation(t *testing.T) {
 			t.Fatalf("error adding a partition")
 		}
 
-		p := txn.GetPartitions()[i].ToStruct()
-		p.NextBlobKey = core.MaxBlobKey
-		txn.PutPartition(p)
+		p := txn.GetPartitions()[i]
+		newPart := p.P.ToStruct()
+		newPart.NextBlobKey = core.MaxBlobKey
+		txn.PutPartition(p.ID, newPart)
 	}
 
 	// Add a non-full partition.
@@ -201,9 +203,10 @@ func TestPartitionAllocation(t *testing.T) {
 		t.Fatalf("error adding a partition")
 	}
 
-	p := txn.GetPartitions()[23].ToStruct()
-	p.NextBlobKey = 100
-	txn.PutPartition(p)
+	p := txn.GetPartitions()[23]
+	newPart := p.P.ToStruct()
+	newPart.NextBlobKey = 100
+	txn.PutPartition(p.ID, newPart)
 
 	// Create should work in the non-full partition.
 	createCmd := CreateBlobCommand{Repl: 1}
@@ -232,9 +235,10 @@ func TestExtendNoSuchBlob(t *testing.T) {
 			t.Fatalf("error adding a partition")
 		}
 
-		p := txn.GetPartitions()[i].ToStruct()
-		p.NextBlobKey = core.MaxBlobKey
-		txn.PutPartition(p)
+		p := txn.GetPartitions()[i]
+		newPart := p.P.ToStruct()
+		newPart.NextBlobKey = core.MaxBlobKey
+		txn.PutPartition(p.ID, newPart)
 	}
 
 	// Add a non-full partition.

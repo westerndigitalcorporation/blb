@@ -24,8 +24,8 @@ func TestStateSnapshot(t *testing.T) {
 
 	txn := s1.WriteTxn(1)
 	txn.SetCuratorID(1)
-	txn.PutPartition(&fb.Partition{Id: 1})
-	txn.PutPartition(&fb.Partition{Id: 3})
+	txn.PutPartition(1, &fb.Partition{})
+	txn.PutPartition(3, &fb.Partition{})
 	txn.PutBlob(core.BlobIDFromParts(1, 1), &fb.Blob{Repl: 3})
 	txn.PutBlob(core.BlobIDFromParts(1, 2), &fb.Blob{Repl: 3})
 	txn.PutBlob(core.BlobIDFromParts(3, 1), &fb.Blob{Repl: 3})

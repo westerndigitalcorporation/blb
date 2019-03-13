@@ -49,7 +49,6 @@ func (b *BlobF) ToStruct() (o *Blob) {
 // ToStruct creates a Blob from a BlobF.
 func (p *PartitionF) ToStruct() (o *Partition) {
 	o = new(Partition)
-	o.Id = core.PartitionID(p.Id())
 	o.NextBlobKey = core.BlobKey(p.NextBlobKey())
 	o.NextRsChunkKey = p.NextRsChunkKey()
 	return

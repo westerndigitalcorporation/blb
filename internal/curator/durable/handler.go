@@ -197,7 +197,7 @@ func (h *StateHandler) GetCuratorInfoLocal() (id core.CuratorID, partitionIDs []
 	partitions := txn.GetPartitions()
 	partitionIDs = make([]core.PartitionID, len(partitions))
 	for i, p := range partitions {
-		partitionIDs[i] = core.PartitionID(p.Id())
+		partitionIDs[i] = p.ID
 	}
 	return
 }
@@ -713,7 +713,7 @@ func (h *StateHandler) GetFreeSpaceLocal() uint64 {
 
 	var free uint64
 	for _, p := range txn.GetPartitions() {
-		free += core.MaxBlobKey - uint64(p.NextBlobKey())
+		free += core.MaxBlobKey - uint64(p.P.NextBlobKey())
 	}
 	return free
 }

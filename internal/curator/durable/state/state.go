@@ -462,15 +462,22 @@ outer:
 }
 
 // PutPartition puts a partition into state.
-func (t *Txn) PutPartition(partition *fb.Partition) {
-	t.put(partitionBucket, partitionID2Key(core.PartitionID(partition.Id)), fb.BuildPartition(partition), defaultFillPct)
+func (t *Txn) PutPartition(id core.PartitionID, partition *fb.Partition) {
+	t.put(partitionBucket, partitionID2Key(id), fb.BuildPartition(partition), defaultFillPct)
+}
+
+type PartitionAndID struct {
+	ID core.PartitionID
+	P  fb.PartitionF
 }
 
 // GetPartitions returns all partitions of this curator.
-func (t *Txn) GetPartitions() (partitions []*fb.PartitionF) {
-	t.txn.Bucket(partitionBucket).ForEach(func(_, v []byte) error {
-		p := fb.GetRootAsPartitionF(v, 0)
-		partitions = append(partitions, p)
+func (t *Txn) GetPartitions() (partitions []PartitionAndID) {
+	t.txn.Bucket(partitionBucket).ForEach(func(k, v []byte) error {
+		partitions = append(partitions, PartitionAndID{
+			ID: key2PartitionID(k),
+			P:  *fb.GetRootAsPartitionF(v, 0),
+		})
 		return nil
 	})
 	return partitions

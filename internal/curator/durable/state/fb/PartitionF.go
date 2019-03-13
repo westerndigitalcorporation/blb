@@ -26,7 +26,7 @@ func (rcv *PartitionF) Table() flatbuffers.Table {
 	return rcv._tab
 }
 
-func (rcv *PartitionF) Id() uint32 {
+func (rcv *PartitionF) NextBlobKey() uint32 {
 	o := flatbuffers.UOffsetT(rcv._tab.Offset(4))
 	if o != 0 {
 		return rcv._tab.GetUint32(o + rcv._tab.Pos)
@@ -34,24 +34,12 @@ func (rcv *PartitionF) Id() uint32 {
 	return 0
 }
 
-func (rcv *PartitionF) MutateId(n uint32) bool {
+func (rcv *PartitionF) MutateNextBlobKey(n uint32) bool {
 	return rcv._tab.MutateUint32Slot(4, n)
 }
 
-func (rcv *PartitionF) NextBlobKey() uint32 {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
-	if o != 0 {
-		return rcv._tab.GetUint32(o + rcv._tab.Pos)
-	}
-	return 0
-}
-
-func (rcv *PartitionF) MutateNextBlobKey(n uint32) bool {
-	return rcv._tab.MutateUint32Slot(6, n)
-}
-
 func (rcv *PartitionF) NextRsChunkKey() uint64 {
-	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
 	if o != 0 {
 		return rcv._tab.GetUint64(o + rcv._tab.Pos)
 	}
@@ -59,20 +47,17 @@ func (rcv *PartitionF) NextRsChunkKey() uint64 {
 }
 
 func (rcv *PartitionF) MutateNextRsChunkKey(n uint64) bool {
-	return rcv._tab.MutateUint64Slot(8, n)
+	return rcv._tab.MutateUint64Slot(6, n)
 }
 
 func PartitionFStart(builder *flatbuffers.Builder) {
-	builder.StartObject(3)
-}
-func PartitionFAddId(builder *flatbuffers.Builder, id uint32) {
-	builder.PrependUint32Slot(0, id, 0)
+	builder.StartObject(2)
 }
 func PartitionFAddNextBlobKey(builder *flatbuffers.Builder, nextBlobKey uint32) {
-	builder.PrependUint32Slot(1, nextBlobKey, 0)
+	builder.PrependUint32Slot(0, nextBlobKey, 0)
 }
 func PartitionFAddNextRsChunkKey(builder *flatbuffers.Builder, nextRsChunkKey uint64) {
-	builder.PrependUint64Slot(2, nextRsChunkKey, 0)
+	builder.PrependUint64Slot(1, nextRsChunkKey, 0)
 }
 func PartitionFEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

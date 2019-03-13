@@ -13,7 +13,6 @@ import (
 func BuildPartition(p *Partition) []byte {
 	bu := flatbuffers.NewBuilder(64)
 	PartitionFStart(bu)
-	PartitionFAddId(bu, uint32(p.Id))
 	PartitionFAddNextBlobKey(bu, uint32(p.NextBlobKey))
 	PartitionFAddNextRsChunkKey(bu, p.NextRsChunkKey)
 	bu.Finish(PartitionFEnd(bu))

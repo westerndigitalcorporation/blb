@@ -13,11 +13,8 @@ struct TractIDF {
   b5: uint16;
 }
 
-// PartitionF holds data about one partition. ID is not strictly necessary since it should
-// always be determined by context, but it makes some code simpler, and there will be very
-// few of these.
+// PartitionF holds data about one partition.
 table PartitionF {
-  id: uint32;
   next_blob_key: uint32;
   next_rs_chunk_key: uint64; // 48 bits of "blob key" and "tract index" in one value
 }
