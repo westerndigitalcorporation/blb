@@ -90,11 +90,10 @@ func (log *tsTraceLog) checkRead(t *testing.T, write bool, addr string, version,
 // Note: this mechanism doesn't provide a way to inject an error into a write
 // _and_ have the write reflected on the tractserver anyway. We can test that
 // later.
-func newClient(trace tsTraceFunc, disableBackupReads bool) *Client {
+func newClient(trace tsTraceFunc) *Client {
 	options := Options{
-		DisableRetry:       true,
-		DisableCache:       true,
-		DisableBackupReads: disableBackupReads,
+		DisableRetry: true,
+		DisableCache: true,
 	}
 	cli := newBaseClient(&options)
 	cli.master = newMemMasterConnection([]string{"1", "2", "3"})
@@ -106,13 +105,11 @@ func newClient(trace tsTraceFunc, disableBackupReads bool) *Client {
 // newTracingClient creates a Client suitable for testing. It's connected to a
 // fake master, three fake curators (each responsible for one partition), and as
 // many tractservers as there are tract copies (the fake curator places each
-// copy on a separate fake tractserver). The disableBackupReads parameter allows
-// the backup read feature to be turned off when tests only need to send reads to
-// a single tract. The trace log returned can be used to check the exact calls made
-// to each tractserver.
-func newTracingClient(disableBackupReads bool) (*Client, *tsTraceLog) {
+// copy on a separate fake tractserver).  The trace log returned can be used to
+// check the exact calls made to each tractserver.
+func newTracingClient() (*Client, *tsTraceLog) {
 	traceLog := new(tsTraceLog)
-	return newClient(traceLog.add, disableBackupReads), traceLog
+	return newClient(traceLog.add), traceLog
 }
 
 // makeData generates a slightly random byte string of the given length, which
@@ -191,7 +188,7 @@ func testWriteReadInParts(t *testing.T, blob *Blob, length int, off int64, write
 }
 
 func createClient() *Client {
-	cli, _ := newTracingClient(true)
+	cli, _ := newTracingClient()
 	return cli
 }
 
@@ -235,7 +232,7 @@ func TestWriteReadCrossTractWithOffsetInParts(t *testing.T) {
 }
 
 func TestWriteReadTraced(t *testing.T) {
-	cli, trace := newTracingClient(true)
+	cli, trace := newTracingClient()
 	blob := createBlob(t, cli)
 	testWriteRead(t, blob, 3*core.TractLength+3000000, 2*core.TractLength+2000000)
 
@@ -272,7 +269,7 @@ func TestWriteReadTraced(t *testing.T) {
 }
 
 func TestWriteReadTracedExactlyOneTract(t *testing.T) {
-	cli, trace := newTracingClient(true)
+	cli, trace := newTracingClient()
 	blob := createBlob(t, cli)
 	testWriteRead(t, blob, core.TractLength, core.TractLength)
 
@@ -288,12 +285,21 @@ func TestWriteReadTracedExactlyOneTract(t *testing.T) {
 
 func (cli *Client) setupBackupClient() chan<- time.Time {
 	bch := make(chan time.Time)
-	cli.backupDelay = func(_ time.Duration) <-chan time.Time { return bch }
+	cli.backupReadState = backupReadState{
+		BackupReadBehavior: BackupReadBehavior{
+			Enabled:       true,
+			MaxNumBackups: 1,
+		},
+	}
+	cli.backupReadState.backupDelayFunc = func(_ time.Duration) <-chan time.Time {
+		<-bch
+		return time.After(0 * time.Second)
+	}
 	return bch
 }
 
 func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
-	cli, trace := newTracingClient(false)
+	cli, trace := newTracingClient()
 	bch := cli.setupBackupClient()
 
 	// Write a blob and check the writes are logged.
@@ -320,8 +326,6 @@ func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
 	}()
 
 	bch <- time.Time{}
-	bch <- time.Time{}
-	bch <- time.Time{}
 
 	// TODO(eric): The test was still racy after using the channel approach. If the first
 	// read completes, the other two are cancelled. Perhaps we need to mock the cancel func
@@ -329,9 +333,7 @@ func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	trace.checkRead(t, false, "ts-0000000100000001:0001-0", 1, core.TractLength, 0)
-	trace.checkRead(t, false, "ts-0000000100000001:0001-1", 1, core.TractLength, 0)
-	trace.checkRead(t, false, "ts-0000000100000001:0001-2", 1, core.TractLength, 0)
-	trace.checkLength(t, 9)
+	trace.checkLength(t, 8)
 }
 
 func TestWriteFailSimple(t *testing.T) {
@@ -342,7 +344,7 @@ func TestWriteFailSimple(t *testing.T) {
 		}
 		return core.NoError
 	}
-	blob := createBlob(t, newClient(fail, true))
+	blob := createBlob(t, newClient(fail))
 	_, err := blob.Write(makeData(100))
 	if err == nil {
 		t.Errorf("write succeeded when it shouldn't have")
@@ -357,7 +359,7 @@ func TestWriteFailLonger(t *testing.T) {
 		}
 		return core.NoError
 	}
-	blob := createBlob(t, newClient(fail, true))
+	blob := createBlob(t, newClient(fail))
 	_, err := blob.Write(makeData(core.TractLength * 5))
 	if err == nil {
 		t.Errorf("write succeeded when it shouldn't have")
@@ -372,7 +374,7 @@ func TestReadFailover(t *testing.T) {
 		}
 		return core.NoError
 	}
-	cli := newClient(fail, true)
+	cli := newClient(fail)
 	testWriteRead(t, createBlob(t, cli), 3*core.TractLength+8765, 2*core.TractLength+27)
 }
 
@@ -561,7 +563,7 @@ func TestShortRead(t *testing.T) {
 // Test listing blobs.
 func TestListBlobs(t *testing.T) {
 	var blobs, out []string
-	cli := newClient(nil, true)
+	cli := newClient(nil)
 	// create enough to spread across partitions
 	for i := 0; i < 100; i++ {
 		blobs = append(blobs, createBlob(t, cli).ID().String())
