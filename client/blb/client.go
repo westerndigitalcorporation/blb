@@ -1102,16 +1102,20 @@ func (cli *Client) readOneTract(
 	defer sem.Release()
 
 	if len(tract.Hosts) > 0 {
-		if !cli.backupReadState.Enabled {
-			cli.readOneTractReplicated(ctx, curAddr, result, tract, thisB, thisOffset)
-		} else {
-			cli.readOneTractWithBackupReplicated(ctx, curAddr, result, tract, thisB, thisOffset)
-		}
+		cli.readOneTractReplicated(ctx, curAddr, result, tract, thisB, thisOffset)
 	} else if tract.RS.Present() {
 		cli.readOneTractRS(ctx, curAddr, result, tract, thisB, thisOffset)
 	} else {
 		*result = tractResult{err: core.ErrInvalidState}
 	}
+}
+
+// errorResult carries state to deterime if a failed tract read should
+// report a bad TS to the curator.
+type errorResult struct {
+	tractID core.TractID
+	host    string
+	err     core.Error
 }
 
 func (cli *Client) readOneTractReplicated(
@@ -1126,113 +1130,7 @@ func (cli *Client) readOneTractReplicated(
 
 	reqID := core.GenRequestID()
 	order := rand.Perm(len(tract.Hosts))
-
-	err := core.ErrAllocHost // default error if none present
-	for _, n := range order {
-		host := tract.Hosts[n]
-		if host == "" {
-			log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
-			continue
-		}
-
-		var read int
-		read, err = cli.tractservers.ReadInto(ctx, host, nil, reqID, tract.Tract, tract.Version, thisB, thisOffset)
-		if err == core.ErrVersionMismatch {
-			badVersionHost = host
-		}
-		if err != core.NoError && err != core.ErrEOF {
-			log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
-			// If we failed to read from a TS, report that to the curator. Defer so we can examine
-			// result.err at the end, to see if we succeeded on another or not.
-			defer func(host string, err core.Error) {
-				couldRecover := result.err == core.NoError || result.err == core.ErrEOF
-				go cli.curators.ReportBadTS(context.Background(), curAddr, tract.Tract, host, "read", err, couldRecover)
-			}(host, err)
-			continue // try another host
-		}
-		log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
-		// In case of short read, i.e., read < len(thisB), we should
-		// pad the result with 0's. This doesn't need to be done
-		// explicitly if 'thisB' given to us starts to be empty.
-		// However, just in case it's not, we will ensure that by
-		// overwritting untouched bytes with 0's.
-		for i := read; i < len(thisB); i++ {
-			thisB[i] = 0
-		}
-		*result = tractResult{len(thisB), read, err, badVersionHost}
-		return
-	}
-
-	log.V(1).Infof("read %s all hosts failed", tract.Tract)
-	*result = tractResult{0, 0, err, badVersionHost}
-}
-
-// errorResult carries state to deterime if a failed tract read should
-// report a bad TS to the curator.
-type errorResult struct {
-	tractID core.TractID
-	host    string
-	err     core.Error
-}
-
-func (cli *Client) readOneTractWithBackupReplicated(
-	ctx context.Context,
-	curAddr string,
-	result *tractResult,
-	tract *core.TractInfo,
-	thisB []byte,
-	thisOffset int64) {
-
-	var badVersionHost string
-
-	reqID := core.GenRequestID()
-	ch := make(chan tractResult)
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	order := rand.Perm(len(tract.Hosts))
 	orderCh := make(chan int, len(tract.Hosts))
-
-	// We set up an array of errorResult for results and each read writes into
-	// its own slot. This is simpler than using a channel and provides a work around
-	// to changing reporting semantics when deferring ReportBadTs calls in helper functions.
-	reportErrors := make([]errorResult, len(order))
-	var idx int
-	readFunc := func(orderCh chan int) {
-		err := core.ErrAllocHost // default error if none present
-		n, more := <-orderCh
-		if !more {
-			// bail if we processed all hosts by now.
-			return
-		}
-		host := tract.Hosts[n]
-		if host == "" {
-			log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
-			return
-		}
-
-		// TODO(eric): fill in otherHosts when ts-ts cancellation is done.
-		read, err := cli.tractservers.ReadInto(ctx, host, nil, reqID, tract.Tract, tract.Version, thisB, thisOffset)
-		if err == core.ErrVersionMismatch {
-			badVersionHost = host
-		}
-		if err != core.NoError && err != core.ErrEOF {
-			reportErrors[idx] = errorResult{tract.Tract, host, err}
-			idx++
-			return
-		}
-		log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
-		// In case of short read, i.e., read < len(thisB), we should
-		// pad the result with 0's. This doesn't need to be done
-		// explicitly if 'thisB' given to us starts to be empty.
-		// However, just in case it's not, we will ensure that by
-		// overwritting untouched bytes with 0's.
-		for i := read; i < len(thisB); i++ {
-			thisB[i] = 0
-		}
-		ch <- tractResult{len(thisB), read, err, badVersionHost}
-	}
 
 	// This goroutine hands out the order in which to process reads.
 	// This ensures that when goroutines are done processing the initial backup
@@ -1244,49 +1142,97 @@ func (cli *Client) readOneTractWithBackupReplicated(
 		close(orderCh)
 	}()
 
-	// Send the first read to the primary tract (item 0 in the order slice) in one goroutine,
-	// then start another goroutine to issue backups after the backup delay time delta passes
-	// to send the request. If all backup reads fail, we fall back to readOneTractReplicated
-	// using the remaning items on the orderCh.
-	maxBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
-	delay := cli.backupReadState.BackupReadBehavior.Delay
-	go readFunc(orderCh)
-	go func(delay time.Duration, maxNumBackups int) {
-		for i := 0; i < maxBackups; i++ {
-			select {
-			case <-cli.backupReadState.backupDelayFunc(delay):
-				go readFunc(orderCh)
-			case <-ctx.Done():
-				fmt.Println("cancelled")
-				log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, i+1)
-				break
-			}
-		}
-	}(delay, maxBackups)
-
-	// Wait for the first result from readFunc keep trying backups until MaxNumBackups is exhausted.
-	// If a single readInto works, cancel the others if no error occured.
-	*result = <-ch
-	if result.err == core.NoError {
-		cancel()
-
-		// Report badness amongst tractservers from backup read phase
-		for _, res := range reportErrors {
-			if res.err != core.NoError && res.err != core.ErrEOF {
-				log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, res.host, res.err)
-				// If we failed to read from a TS, report that to the curator. Defer so we can examine
-				// result.err at the end, to see if we succeeded on another or not.
-				defer func(host string, err core.Error) {
-					couldRecover := result.err == core.NoError || result.err == core.ErrEOF
-					go cli.curators.ReportBadTS(context.Background(), curAddr, res.tractID, host, "read", err, couldRecover)
-				}(res.host, res.err)
-			}
-		}
-		return
-	}
-	// TODO(eric): clean up dupe code for fallback to serial read logic. Biggest outstanding question here
-	// is how to do the deferred ReportBadTS calls.
 	err := core.ErrAllocHost // default error if none present
+	if cli.backupReadState.BackupReadBehavior.Enabled {
+		ch := make(chan tractResult)
+
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		order := rand.Perm(len(tract.Hosts))
+		// We set up an array of errorResult for results and each read writes into
+		// its own slot. This is simpler than using a channel and provides a work around
+		// to changing reporting semantics when deferring ReportBadTs calls in helper functions.
+		reportErrors := make([]errorResult, len(order))
+		var idx int
+		readFunc := func(orderCh chan int) {
+			err := core.ErrAllocHost // default error if none present
+			n, more := <-orderCh
+			if !more {
+				// bail if we processed all hosts by now.
+				return
+			}
+			host := tract.Hosts[n]
+			if host == "" {
+				log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
+				return
+			}
+
+			// TODO(eric): fill in otherHosts when ts-ts cancellation is done.
+			read, err := cli.tractservers.ReadInto(ctx, host, nil, reqID, tract.Tract, tract.Version, thisB, thisOffset)
+			if err == core.ErrVersionMismatch {
+				badVersionHost = host
+			}
+			if err != core.NoError && err != core.ErrEOF {
+				reportErrors[idx] = errorResult{tract.Tract, host, err}
+				idx++
+				return
+			}
+			log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
+			// In case of short read, i.e., read < len(thisB), we should
+			// pad the result with 0's. This doesn't need to be done
+			// explicitly if 'thisB' given to us starts to be empty.
+			// However, just in case it's not, we will ensure that by
+			// overwritting untouched bytes with 0's.
+			for i := read; i < len(thisB); i++ {
+				thisB[i] = 0
+			}
+			ch <- tractResult{len(thisB), read, err, badVersionHost}
+		}
+
+		// Send the first read to the primary tract (item 0 in the order slice) in one goroutine,
+		// then start another goroutine to issue backups after the backup delay time delta passes
+		// to send the request. If all backup reads fail, we fall back to readOneTractReplicated
+		// using the remaning items on the orderCh.
+		maxBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
+		delay := cli.backupReadState.BackupReadBehavior.Delay
+		go readFunc(orderCh)
+		go func(delay time.Duration, maxNumBackups int) {
+			for i := 0; i < maxBackups; i++ {
+				select {
+				case <-cli.backupReadState.backupDelayFunc(delay):
+					go readFunc(orderCh)
+				case <-ctx.Done():
+					fmt.Println("cancelled")
+					log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, i+1)
+					break
+				}
+			}
+		}(delay, maxBackups)
+
+		// Wait for the first result from readFunc keep trying backups until MaxNumBackups is exhausted.
+		// If a single readInto works, cancel the others if no error occured.
+		*result = <-ch
+		if result.err == core.NoError {
+			cancel()
+
+			// Report badness amongst tractservers from backup read phase
+			for _, res := range reportErrors {
+				if res.err != core.NoError && res.err != core.ErrEOF {
+					log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, res.host, res.err)
+					// If we failed to read from a TS, report that to the curator. Defer so we can examine
+					// result.err at the end, to see if we succeeded on another or not.
+					defer func(host string, err core.Error) {
+						couldRecover := result.err == core.NoError || result.err == core.ErrEOF
+						go cli.curators.ReportBadTS(context.Background(), curAddr, res.tractID, host, "read", err, couldRecover)
+					}(res.host, res.err)
+				}
+			}
+			return
+		}
+
+	}
+
 	for n := range orderCh {
 		host := tract.Hosts[n]
 		if host == "" {
@@ -1324,7 +1270,6 @@ func (cli *Client) readOneTractWithBackupReplicated(
 
 	log.V(1).Infof("read %s all hosts failed", tract.Tract)
 	*result = tractResult{0, 0, err, badVersionHost}
-
 }
 
 func (cli *Client) readOneTractRS(
