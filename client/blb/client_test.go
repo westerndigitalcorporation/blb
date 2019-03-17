@@ -83,6 +83,16 @@ func (log *tsTraceLog) checkRead(t *testing.T, write bool, addr string, version,
 	t.Errorf("trace log missing entry %v %v %v %v %v", write, addr, version, length, off)
 }
 
+// checkReadGroup checks that a group of entries is present and verifies the read host address.
+// This is useful for checking a batch of concurrent reads are present in the log.
+// The tract id itself is embedded in addr (along with the index of the
+// tractserver), so we don't bother checking id.
+func (log *tsTraceLog) checkReadEntries(t *testing.T, write bool, entries []tsTraceEntry) {
+	for _, e := range entries {
+		log.checkRead(t, write, e.addr, e.version, e.length, e.off)
+	}
+}
+
 // newClient creates a Client suitable for testing. The trace function given
 // should return core.NoError for a read/write to proceed, and something else to
 // inject an error. The disableBackupReads parameter allows the backup read feature
@@ -283,15 +293,16 @@ func TestWriteReadTracedExactlyOneTract(t *testing.T) {
 	trace.checkLength(t, 7)
 }
 
-func (cli *Client) setupBackupClient() chan<- time.Time {
+func (cli *Client) setupBackupClient(maxNumBackups int) chan<- time.Time {
 	bch := make(chan time.Time)
 	cli.backupReadState = backupReadState{
 		BackupReadBehavior: BackupReadBehavior{
 			Enabled:       true,
-			MaxNumBackups: 1,
+			MaxNumBackups: maxNumBackups,
 		},
 	}
 	cli.backupReadState.backupDelayFunc = func(_ time.Duration) <-chan time.Time {
+		// send a time value to this channel to unblock.
 		<-bch
 		return time.After(0 * time.Second)
 	}
@@ -300,7 +311,7 @@ func (cli *Client) setupBackupClient() chan<- time.Time {
 
 func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
 	cli, trace := newTracingClient()
-	bch := cli.setupBackupClient()
+	bch := cli.setupBackupClient(2) // 2 backup requests
 
 	// Write a blob and check the writes are logged.
 	blob := createBlob(t, cli)
@@ -325,15 +336,38 @@ func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
 		}
 	}()
 
-	bch <- time.Time{}
-
 	// TODO(eric): The test was still racy after using the channel approach. If the first
 	// read completes, the other two are cancelled. Perhaps we need to mock the cancel func
 	// as well to disable cancellation?
+	bch <- time.Time{}
+	bch <- time.Time{}
 	time.Sleep(100 * time.Millisecond)
 
-	trace.checkRead(t, false, "ts-0000000100000001:0001-0", 1, core.TractLength, 0)
-	trace.checkLength(t, 8)
+	// Check that all three reads, 1 primary and 2 backup requests are logged.
+	tsIDs := []tsTraceEntry{
+		{addr: "ts-0000000100000001:0001-0", version: 1, length: core.TractLength, off: 0},
+		{addr: "ts-0000000100000001:0001-1", version: 1, length: core.TractLength, off: 0},
+		{addr: "ts-0000000100000001:0001-2", version: 1, length: core.TractLength, off: 0},
+	}
+	trace.checkReadEntries(t, false, tsIDs)
+	trace.checkLength(t, 9)
+}
+
+func TestReadFailoverWithBackups(t *testing.T) {
+	fail := func(e tsTraceEntry) core.Error {
+		// Reads from the first two tractservers fail.
+		if !e.write && !strings.HasSuffix(e.addr, "2") {
+			return core.ErrRPC
+		}
+		return core.NoError
+	}
+
+	cli := newClient(fail)
+	bch := cli.setupBackupClient(1) // 1 backup requests
+	go func() {
+		bch <- time.Time{}
+	}()
+	testWriteRead(t, createBlob(t, cli), 3*core.TractLength+8765, 2*core.TractLength+27)
 }
 
 func TestWriteFailSimple(t *testing.T) {

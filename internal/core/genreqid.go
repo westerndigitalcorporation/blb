@@ -22,7 +22,7 @@ func makePrefix() string {
 
 // GenRequestID returns a unique string to be used as a request id for cancellation. This
 // implementation works by using 120 random bits as a process identitifer combined with
-// 64 random bits of a sequence number. The values that it produces are printable (though things
+// 64 bits of a sequence number. The values that it produces are printable (though things
 // should work regadless).
 func GenRequestID() string {
 	id := atomic.AddUint64(&seqNum, 1)

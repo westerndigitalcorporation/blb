@@ -895,7 +895,8 @@ func (cli *Client) writeOneTract(
 	sem.Acquire()
 	defer sem.Release()
 
-	*result = cli.tractservers.Write(ctx, host, tract.Tract, tract.Version, thisB, thisOffset)
+	reqID := core.GenRequestID()
+	*result = cli.tractservers.Write(ctx, host, reqID, tract.Tract, tract.Version, thisB, thisOffset)
 
 	log.V(1).Infof("write %s to %s: %s", tract.Tract, host, *result)
 }
@@ -916,7 +917,8 @@ func (cli *Client) createOneTract(
 	sem.Acquire()
 	defer sem.Release()
 
-	*result = cli.tractservers.Create(ctx, host, tsid, tract.Tract, thisB, thisOffset)
+	reqID := core.GenRequestID()
+	*result = cli.tractservers.Create(ctx, host, reqID, tsid, tract.Tract, thisB, thisOffset)
 
 	log.V(1).Infof("create %s to %s: %s", tract.Tract, host, *result)
 }
@@ -1149,22 +1151,18 @@ func (cli *Client) readOneTractReplicated(
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
-		order := rand.Perm(len(tract.Hosts))
 		// We set up an array of errorResult for results and each read writes into
 		// its own slot. This is simpler than using a channel and provides a work around
 		// to changing reporting semantics when deferring ReportBadTs calls in helper functions.
-		reportErrors := make([]errorResult, len(order))
-		var idx int
+		reportErrors := make([]errorResult, len(tract.Hosts))
+		idx := 0
 		readFunc := func(orderCh chan int) {
 			err := core.ErrAllocHost // default error if none present
-			n, more := <-orderCh
-			if !more {
-				// bail if we processed all hosts by now.
-				return
-			}
+			n := <-orderCh
 			host := tract.Hosts[n]
 			if host == "" {
 				log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
+				ch <- tractResult{0, 0, err, badVersionHost}
 				return
 			}
 
@@ -1174,8 +1172,10 @@ func (cli *Client) readOneTractReplicated(
 				badVersionHost = host
 			}
 			if err != core.NoError && err != core.ErrEOF {
+				// TODO: This probably has a race, pull this into a struct with a lock.
 				reportErrors[idx] = errorResult{tract.Tract, host, err}
 				idx++
+				ch <- tractResult{0, 0, err, badVersionHost}
 				return
 			}
 			log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
