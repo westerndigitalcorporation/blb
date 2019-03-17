@@ -5,7 +5,6 @@ package blb
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"strings"
 	"sync"
@@ -1151,11 +1150,12 @@ func (cli *Client) readOneTractReplicated(
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
-		// We set up an array of errorResult for results and each read writes into
-		// its own slot. This is simpler than using a channel and provides a work around
-		// to changing reporting semantics when deferring ReportBadTs calls in helper functions.
-		reportErrors := make([]errorResult, len(tract.Hosts))
+		// Track state for reporting bad TSs in an array of errorResults after the backup request phase
+		// is done. Each gouroutine writes into its own slot. This is simpler than using a channel and
+		// provides a work around to changing reporting semantics when deferring ReportBadTs calls in
+		// helper functions.
 		idx := 0
+		reportErrors := make([]errorResult, len(tract.Hosts))
 		readFunc := func(orderCh chan int) {
 			err := core.ErrAllocHost // default error if none present
 			n := <-orderCh
@@ -1190,10 +1190,14 @@ func (cli *Client) readOneTractReplicated(
 			ch <- tractResult{len(thisB), read, err, badVersionHost}
 		}
 
-		// Send the first read to the primary tract (item 0 in the order slice) in one goroutine,
-		// then start another goroutine to issue backups after the backup delay time delta passes
-		// to send the request. If all backup reads fail, we fall back to readOneTractReplicated
-		// using the remaning items on the orderCh.
+		// Backup request logic involves the following:
+		// 1) Send the first read to the primary tract (item 0 available from the orderCh) in one goroutine.
+		// 2) Start another goroutine to issue backup requests. Each subsequent request is spawned after the
+		// configured backup time.After delay time expires.
+		// 3) Block until the first read is returned from the goroutines servicing the reads. Note that if the
+		// the request returned fails, we accept that and continume on to the fallback phase for sequential reads.
+		// We could optimize this later and scan for the first successful backup request, but that may not be
+		// worth the latency savings.
 		maxBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
 		delay := cli.backupReadState.BackupReadBehavior.Delay
 		go readFunc(orderCh)
@@ -1203,20 +1207,18 @@ func (cli *Client) readOneTractReplicated(
 				case <-cli.backupReadState.backupDelayFunc(delay):
 					go readFunc(orderCh)
 				case <-ctx.Done():
-					fmt.Println("cancelled")
 					log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, i+1)
 					break
 				}
 			}
 		}(delay, maxBackups)
 
-		// Wait for the first result from readFunc keep trying backups until MaxNumBackups is exhausted.
-		// If a single readInto works, cancel the others if no error occured.
+		// Block and take the first result.
 		*result = <-ch
 		if result.err == core.NoError {
 			cancel()
 
-			// Report badness amongst tractservers from backup read phase
+			// Report badness amongst tractservers from backup read phase.
 			for _, res := range reportErrors {
 				if res.err != core.NoError && res.err != core.ErrEOF {
 					log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, res.host, res.err)
@@ -1230,9 +1232,10 @@ func (cli *Client) readOneTractReplicated(
 			}
 			return
 		}
-
 	}
 
+	// Sequentailly read from tract server replicas. This phase will run if backups are disabled from config state, or
+	// the backup read phase fails and we use this as a fallback.
 	for n := range orderCh {
 		host := tract.Hosts[n]
 		if host == "" {
