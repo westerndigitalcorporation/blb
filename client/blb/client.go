@@ -1150,14 +1150,13 @@ func (cli *Client) readOneTractReplicated(
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
-		// Track state for reporting bad TSs in an array of errorResults after the backup request phase
-		// is done. Each gouroutine writes into its own slot. This is simpler than using a channel and
-		// provides a work around to changing reporting semantics when deferring ReportBadTs calls in
-		// helper functions.
-		idx := 0
-		reportErrors := make([]errorResult, len(tract.Hosts))
+		maxNumBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
+		delay := cli.backupReadState.BackupReadBehavior.Delay
+
+		// report bad tractservers
+		var badTSReporter []errorResult
+
 		readFunc := func(orderCh chan int) {
-			err := core.ErrAllocHost // default error if none present
 			n := <-orderCh
 			host := tract.Hosts[n]
 			if host == "" {
@@ -1172,9 +1171,7 @@ func (cli *Client) readOneTractReplicated(
 				badVersionHost = host
 			}
 			if err != core.NoError && err != core.ErrEOF {
-				// TODO: This probably has a race, pull this into a struct with a lock.
-				reportErrors[idx] = errorResult{tract.Tract, host, err}
-				idx++
+				badTSReporter = append(badTSReporter, errorResult{tract.Tract, host, err})
 				ch <- tractResult{0, 0, err, badVersionHost}
 				return
 			}
@@ -1198,11 +1195,9 @@ func (cli *Client) readOneTractReplicated(
 		// the request returned fails, we accept that and continume on to the fallback phase for sequential reads.
 		// We could optimize this later and scan for the first successful backup request, but that may not be
 		// worth the latency savings.
-		maxBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
-		delay := cli.backupReadState.BackupReadBehavior.Delay
 		go readFunc(orderCh)
 		go func(delay time.Duration, maxNumBackups int) {
-			for i := 0; i < maxBackups; i++ {
+			for i := 0; i < maxNumBackups; i++ {
 				select {
 				case <-cli.backupReadState.backupDelayFunc(delay):
 					go readFunc(orderCh)
@@ -1211,25 +1206,25 @@ func (cli *Client) readOneTractReplicated(
 					break
 				}
 			}
-		}(delay, maxBackups)
+		}(delay, maxNumBackups)
 
 		// Block and take the first result.
 		*result = <-ch
-		if result.err == core.NoError {
-			cancel()
 
-			// Report badness amongst tractservers from backup read phase.
-			for _, res := range reportErrors {
-				if res.err != core.NoError && res.err != core.ErrEOF {
-					log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, res.host, res.err)
-					// If we failed to read from a TS, report that to the curator. Defer so we can examine
-					// result.err at the end, to see if we succeeded on another or not.
-					defer func(host string, err core.Error) {
-						couldRecover := result.err == core.NoError || result.err == core.ErrEOF
-						go cli.curators.ReportBadTS(context.Background(), curAddr, res.tractID, host, "read", err, couldRecover)
-					}(res.host, res.err)
-				}
+		// Report badness amongst tractservers from backup read phase.
+		for _, res := range badTSReporter {
+			if res.err != core.NoError && res.err != core.ErrEOF {
+				log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, res.host, res.err)
+				// If we failed to read from a TS, report that to the curator. Defer so we can examine
+				// result.err at the end, to see if we succeeded on another or not.
+				defer func(host string, err core.Error) {
+					couldRecover := result.err == core.NoError || result.err == core.ErrEOF
+					go cli.curators.ReportBadTS(context.Background(), curAddr, res.tractID, host, "read", err, couldRecover)
+				}(res.host, res.err)
 			}
+		}
+
+		if result.err == core.NoError {
 			return
 		}
 	}
