@@ -1131,17 +1131,10 @@ func (cli *Client) readOneTractReplicated(
 
 	reqID := core.GenRequestID()
 	order := rand.Perm(len(tract.Hosts))
-	orderCh := make(chan int, len(tract.Hosts))
 
-	// This goroutine hands out the order in which to process reads.
-	// This ensures that when goroutines are done processing the initial backup
-	// phase, we can know which hosts still need to be processed sequentially.
-	go func() {
-		for _, n := range order {
-			orderCh <- n
-		}
-		close(orderCh)
-	}()
+	// Get a channel to process hosts according to order and release
+	// the goroutine spawned in the ordering call.
+	orderCh, doneCh := ordering(order...)
 
 	err := core.ErrAllocHost // default error if none present
 	if cli.backupReadState.BackupReadBehavior.Enabled {
@@ -1225,6 +1218,7 @@ func (cli *Client) readOneTractReplicated(
 		}
 
 		if result.err == core.NoError {
+			doneCh <- struct{}{}
 			return
 		}
 	}

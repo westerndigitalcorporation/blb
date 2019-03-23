@@ -1,6 +1,8 @@
 package blb
 
-import "time"
+import (
+	"time"
+)
 
 // BackupReadBehavior lets clients decide when to enable or disable backup reads. The delay
 // field determines how long before the backup request is sent.
@@ -37,4 +39,22 @@ func makeBackupReadState(behavior BackupReadBehavior) backupReadState {
 		BackupReadBehavior: behavior,
 		backupDelayFunc:    time.After,
 	}
+}
+
+// ordering sends items in order onto the out channel. When downstream
+// consumers are finshed a signal should be sent on the done channel.
+func ordering(order ...int) (out chan int, done chan struct{}) {
+	out = make(chan int)
+	done = make(chan struct{})
+	go func() {
+		for _, n := range order {
+			select {
+			case out <- n:
+			case <-done:
+				break
+			}
+		}
+		close(out)
+	}()
+	return out, done
 }
