@@ -1142,7 +1142,6 @@ func (cli *Client) readOneTractReplicated(
 		maxNumBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
 		delay := cli.backupReadState.BackupReadBehavior.Delay
 
-		// report bad tractservers
 		readFunc := func(n int) {
 			host := tract.Hosts[n]
 			if host == "" {
@@ -1157,7 +1156,7 @@ func (cli *Client) readOneTractReplicated(
 				badVersionHost = host
 			}
 			if err != core.NoError && err != core.ErrEOF {
-				// TODO(eric): Redo ts reporting.
+				// TODO(eric): redo bad TS reporting mechanism.
 				ch <- tractResult{0, 0, err, badVersionHost}
 				return
 			}
@@ -1254,12 +1253,7 @@ func (cli *Client) readOneTractRS(
 
 	if err != core.NoError && err != core.ErrEOF {
 		log.V(1).Infof("rs read %s from tractserver at address %s: %s", tract.Tract, tract.RS.Host, err)
-		// If we failed to read from a TS, report that to the curator. Defer so
-		// we can examine result.err at the end, to see if we recovered or not.
-		defer func(err core.Error) {
-			couldRecover := result.err == core.NoError || result.err == core.ErrEOF
-			go cli.curators.ReportBadTS(context.Background(), curAddr, rsTract, tract.RS.Host, "read", err, couldRecover)
-		}(err)
+		// TODO(eric): redo bad TS reporting mechanism.
 		if !cli.shouldReconstruct(tract) {
 			*result = tractResult{len(thisB), 0, err, ""}
 			return
