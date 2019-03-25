@@ -40,21 +40,3 @@ func makeBackupReadState(behavior BackupReadBehavior) backupReadState {
 		backupDelayFunc:    time.After,
 	}
 }
-
-// ordering sends items in order onto the out channel. When downstream
-// consumers are finshed a signal should be sent on the done channel.
-func ordering(order ...int) (out chan int, done chan struct{}) {
-	out = make(chan int)
-	done = make(chan struct{})
-	go func() {
-		for _, n := range order {
-			select {
-			case out <- n:
-			case <-done:
-				break
-			}
-		}
-		close(out)
-	}()
-	return out, done
-}

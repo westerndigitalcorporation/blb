@@ -293,25 +293,28 @@ func TestWriteReadTracedExactlyOneTract(t *testing.T) {
 	trace.checkLength(t, 7)
 }
 
-func (cli *Client) setupBackupClient(maxNumBackups int) chan<- time.Time {
-	bch := make(chan time.Time)
-	cli.backupReadState = backupReadState{
-		BackupReadBehavior: BackupReadBehavior{
-			Enabled:       true,
-			MaxNumBackups: maxNumBackups,
-		},
+func (cli *Client) setupBackupClient(maxNumBackups int, overrideDelay bool) chan<- time.Time {
+	behavior := BackupReadBehavior{
+		Enabled:       true,
+		MaxNumBackups: maxNumBackups,
+		Delay:         2 * time.Millisecond,
 	}
-	cli.backupReadState.backupDelayFunc = func(_ time.Duration) <-chan time.Time {
-		// send a time value to this channel to unblock.
-		<-bch
-		return time.After(0 * time.Second)
+	cli.backupReadState = makeBackupReadState(behavior)
+	if overrideDelay {
+		bch := make(chan time.Time)
+		cli.backupReadState.backupDelayFunc = func(_ time.Duration) <-chan time.Time {
+			// send a time value to this channel to unblock.
+			<-bch
+			return time.After(0 * time.Second)
+		}
+		return bch
 	}
-	return bch
+	return nil
 }
 
 func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
 	cli, trace := newTracingClient()
-	bch := cli.setupBackupClient(2) // 2 backup requests
+	bch := cli.setupBackupClient(2, true) // 2 backup requests
 
 	// Write a blob and check the writes are logged.
 	blob := createBlob(t, cli)
@@ -341,6 +344,7 @@ func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
 	// as well to disable cancellation?
 	bch <- time.Time{}
 	bch <- time.Time{}
+	bch <- time.Time{}
 	time.Sleep(100 * time.Millisecond)
 
 	// Check that all three reads, 1 primary and 2 backup requests are logged.
@@ -363,10 +367,7 @@ func TestReadFailoverWithBackups(t *testing.T) {
 	}
 
 	cli := newClient(fail)
-	bch := cli.setupBackupClient(1) // 1 backup requests
-	go func() {
-		bch <- time.Time{}
-	}()
+	_ = cli.setupBackupClient(1, false) // 1 backup requests
 	testWriteRead(t, createBlob(t, cli), 3*core.TractLength+8765, 2*core.TractLength+27)
 }
 
