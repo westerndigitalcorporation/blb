@@ -1111,12 +1111,11 @@ func (cli *Client) readOneTract(
 	}
 }
 
-// errorResult carries state to deterime if a failed tract read should
-// report a bad TS to the curator.
-type errorResult struct {
-	tractID core.TractID
-	host    string
-	err     core.Error
+type tractResultRepl struct {
+	tractResult
+
+	badReadHost string // tracks what host has a failed read
+	thisB       []byte
 }
 
 func (cli *Client) readOneTractReplicated(
@@ -1127,14 +1126,16 @@ func (cli *Client) readOneTractReplicated(
 	thisB []byte,
 	thisOffset int64) {
 
+	// TODO(eric): remove this var when we redo bad ts version reporting
 	var badVersionHost string
 
 	reqID := core.GenRequestID()
 	order := rand.Perm(len(tract.Hosts))
+	badReadHosts := make(map[string]bool)
 
 	err := core.ErrAllocHost // default error if none present
 	if cli.backupReadState.BackupReadBehavior.Enabled {
-		ch := make(chan tractResult)
+		ch := make(chan tractResultRepl)
 
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -1142,22 +1143,28 @@ func (cli *Client) readOneTractReplicated(
 		maxNumBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
 		delay := cli.backupReadState.BackupReadBehavior.Delay
 
-		readFunc := func(n int) {
-			host := tract.Hosts[n]
+		readFunc := func(wg *sync.WaitGroup, n int, thisBLoc []byte) {
+			defer wg.Done()
+			host := tract.Hosts[order[n]]
 			if host == "" {
 				log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
-				ch <- tractResult{0, 0, err, badVersionHost}
+				ch <- tractResultRepl{
+					tractResult: tractResult{0, 0, err, badVersionHost},
+					thisB:       nil,
+				}
 				return
 			}
 
 			// TODO(eric): fill in otherHosts when ts-ts cancellation is done.
-			read, err := cli.tractservers.ReadInto(ctx, host, nil, reqID, tract.Tract, tract.Version, thisB, thisOffset)
-			if err == core.ErrVersionMismatch {
-				badVersionHost = host
-			}
+			read, err := cli.tractservers.ReadInto(ctx, host, nil, reqID, tract.Tract, tract.Version, thisBLoc, thisOffset)
+			// TODO(eric): add back ErrVersionMismatch check.
 			if err != core.NoError && err != core.ErrEOF {
 				// TODO(eric): redo bad TS reporting mechanism.
-				ch <- tractResult{0, 0, err, badVersionHost}
+				ch <- tractResultRepl{
+					tractResult: tractResult{0, 0, err, badVersionHost},
+					badReadHost: host,
+					thisB:       nil,
+				}
 				return
 			}
 			log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
@@ -1166,10 +1173,13 @@ func (cli *Client) readOneTractReplicated(
 			// explicitly if 'thisB' given to us starts to be empty.
 			// However, just in case it's not, we will ensure that by
 			// overwritting untouched bytes with 0's.
-			for i := read; i < len(thisB); i++ {
-				thisB[i] = 0
+			for i := read; i < len(thisBLoc); i++ {
+				thisBLoc[i] = 0
 			}
-			ch <- tractResult{len(thisB), read, err, badVersionHost}
+			ch <- tractResultRepl{
+				tractResult: tractResult{len(thisBLoc), read, err, badVersionHost},
+				thisB:       thisBLoc,
+			}
 			return
 		}
 
@@ -1181,32 +1191,48 @@ func (cli *Client) readOneTractReplicated(
 		// the request returned fails, we accept that and continume on to the fallback phase for sequential reads.
 		// We could optimize this later and scan for the first successful backup request, but that may not be
 		// worth the latency savings.
+		var wg sync.WaitGroup
+		nb := min(maxNumBackups+1, len(order))
+		wg.Add(nb)
 		go func() {
-			nb := min(maxNumBackups+1, len(order))
-			for i := 0; i < nb; i++ {
+			for n := 0; n < nb; n++ {
 				select {
-				case <-cli.backupReadState.backupDelayFunc(time.Duration(i) * delay):
-					go readFunc(order[i])
+				case <-cli.backupReadState.delayFunc(time.Duration(n) * delay):
+					thisBLoc := make([]byte, len(thisB))
+					go readFunc(&wg, n, thisBLoc)
 				case <-ctx.Done():
-					log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, i)
+					log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, n)
 					break
 				}
 			}
 		}()
+		go func() {
+			wg.Wait()
+			close(ch)
+		}()
 
-		// take the first result.
-		*result = <-ch
-		if result.err == core.NoError {
-			return
+		// Take the first result or mark bad hosts from being read during the
+		// fallback phase below.
+		for res := range ch {
+			if res.err == core.NoError {
+				*result = res.tractResult
+				copy(thisB, res.thisB)
+				return
+			}
+			badReadHosts[res.badReadHost] = true
 		}
 	}
 
-	// Sequentailly read from tract server replicas. This phase will run if backups are disabled from config state, or
+	// Sequentially read from tract server replicas. This phase will run if backups are disabled from config state, or
 	// the backup read phase fails and we use this as a fallback.
 	for n := range order {
 		host := tract.Hosts[n]
 		if host == "" {
 			log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
+			continue
+		}
+		if badReadHosts[host] {
+			log.V(1).Infof("read %s from tsid %d: skipping host due to failed in backup phase", tract.Tract, tract.TSIDs[n])
 			continue
 		}
 

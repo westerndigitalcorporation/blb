@@ -302,7 +302,7 @@ func (cli *Client) setupBackupClient(maxNumBackups int, overrideDelay bool) chan
 	cli.backupReadState = makeBackupReadState(behavior)
 	if overrideDelay {
 		bch := make(chan time.Time)
-		cli.backupReadState.backupDelayFunc = func(_ time.Duration) <-chan time.Time {
+		cli.backupReadState.delayFunc = func(_ time.Duration) <-chan time.Time {
 			// send a time value to this channel to unblock.
 			<-bch
 			return time.After(0 * time.Second)
@@ -367,7 +367,7 @@ func TestReadFailoverWithBackups(t *testing.T) {
 	}
 
 	cli := newClient(fail)
-	_ = cli.setupBackupClient(1, false) // 1 backup requests
+	_ = cli.setupBackupClient(2, false) // 1 backup requests
 	testWriteRead(t, createBlob(t, cli), 3*core.TractLength+8765, 2*core.TractLength+27)
 }
 

@@ -22,7 +22,7 @@ type backupReadState struct {
 	BackupReadBehavior
 
 	// backupDelay is the delay before sending backup reads.
-	backupDelayFunc func(time.Duration) <-chan time.Time
+	delayFunc func(time.Duration) <-chan time.Time
 }
 
 func makeBackupReadState(behavior BackupReadBehavior) backupReadState {
@@ -37,6 +37,6 @@ func makeBackupReadState(behavior BackupReadBehavior) backupReadState {
 	}
 	return backupReadState{
 		BackupReadBehavior: behavior,
-		backupDelayFunc:    time.After,
+		delayFunc:          time.After,
 	}
 }
