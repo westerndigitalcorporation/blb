@@ -1134,6 +1134,29 @@ func (cli *Client) readOneTractReplicated(
 	badReadHosts := make(map[string]bool)
 
 	err := core.ErrAllocHost // default error if none present
+	readFunc := func(host string, n int, thisBLoc []byte) tractResult {
+		// TODO(eric): fill in otherHosts when ts-ts cancellation is done.
+		read, err := cli.tractservers.ReadInto(ctx, host, nil, reqID, tract.Tract, tract.Version, thisBLoc, thisOffset)
+		// TODO(eric): redo this check when we fix error reporting.
+		if err == core.ErrVersionMismatch {
+			badVersionHost = host
+		}
+		if err != core.NoError && err != core.ErrEOF {
+			// TODO(eric): redo bad TS reporting mechanism.
+			return tractResult{0, 0, err, badVersionHost}
+		}
+		log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
+		// In case of short read, i.e., read < len(thisB), we should
+		// pad the result with 0's. This doesn't need to be done
+		// explicitly if 'thisB' given to us starts to be empty.
+		// However, just in case it's not, we will ensure that by
+		// overwritting untouched bytes with 0's.
+		for i := read; i < len(thisBLoc); i++ {
+			thisBLoc[i] = 0
+		}
+		return tractResult{len(thisBLoc), read, err, badVersionHost}
+	}
+
 	if cli.backupReadState.BackupReadBehavior.Enabled {
 		ch := make(chan tractResultRepl)
 
@@ -1143,54 +1166,34 @@ func (cli *Client) readOneTractReplicated(
 		maxNumBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
 		delay := cli.backupReadState.BackupReadBehavior.Delay
 
-		readFunc := func(wg *sync.WaitGroup, n int, thisBLoc []byte) {
+		// Backup request logic involves the following:
+		// 1) Send the first read to the first host (item 0 available from the orderCh) in a goroutine.
+		// 2) Start another goroutine to issue backup requests. Each subsequent request is spawned after the
+		// configured backup time.After delay time expires.
+		// 3) Block until read tractResults are available from the goroutines processing the reads. In the result
+		// collection phase, we mark which hosts reutrned RPC or other errors so we don't re-send reads in the fallback
+		// phase.
+		readFuncBackup := func(wg *sync.WaitGroup, n int, thisBLoc []byte) {
 			defer wg.Done()
 			host := tract.Hosts[order[n]]
 			if host == "" {
 				log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
 				ch <- tractResultRepl{
 					tractResult: tractResult{0, 0, err, badVersionHost},
-					thisB:       nil,
+					thisB:       thisBLoc,
 				}
 				return
 			}
 
-			// TODO(eric): fill in otherHosts when ts-ts cancellation is done.
-			read, err := cli.tractservers.ReadInto(ctx, host, nil, reqID, tract.Tract, tract.Version, thisBLoc, thisOffset)
-			// TODO(eric): add back ErrVersionMismatch check.
-			if err != core.NoError && err != core.ErrEOF {
-				// TODO(eric): redo bad TS reporting mechanism.
-				ch <- tractResultRepl{
-					tractResult: tractResult{0, 0, err, badVersionHost},
-					badReadHost: host,
-					thisB:       nil,
-				}
-				return
-			}
-			log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
-			// In case of short read, i.e., read < len(thisB), we should
-			// pad the result with 0's. This doesn't need to be done
-			// explicitly if 'thisB' given to us starts to be empty.
-			// However, just in case it's not, we will ensure that by
-			// overwritting untouched bytes with 0's.
-			for i := read; i < len(thisBLoc); i++ {
-				thisBLoc[i] = 0
-			}
+			result := readFunc(host, n, thisBLoc)
+
 			ch <- tractResultRepl{
-				tractResult: tractResult{len(thisBLoc), read, err, badVersionHost},
+				tractResult: result,
+				badReadHost: host,
 				thisB:       thisBLoc,
 			}
-			return
 		}
 
-		// Backup request logic involves the following:
-		// 1) Send the first read to the first host (item 0 available from the orderCh) in a goroutine.
-		// 2) Start another goroutine to issue backup requests. Each subsequent request is spawned after the
-		// configured backup time.After delay time expires.
-		// 3) Block until the first read is returned from the goroutines servicing the reads. Note that if the
-		// the request returned fails, we accept that and continume on to the fallback phase for sequential reads.
-		// We could optimize this later and scan for the first successful backup request, but that may not be
-		// worth the latency savings.
 		var wg sync.WaitGroup
 		nb := min(maxNumBackups+1, len(order))
 		wg.Add(nb)
@@ -1199,7 +1202,7 @@ func (cli *Client) readOneTractReplicated(
 				select {
 				case <-cli.backupReadState.delayFunc(time.Duration(n) * delay):
 					thisBLoc := make([]byte, len(thisB))
-					go readFunc(&wg, n, thisBLoc)
+					go readFuncBackup(&wg, n, thisBLoc)
 				case <-ctx.Done():
 					log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, n)
 					break
@@ -1235,27 +1238,11 @@ func (cli *Client) readOneTractReplicated(
 			log.V(1).Infof("read %s from tsid %d: skipping host due to failed in backup phase", tract.Tract, tract.TSIDs[n])
 			continue
 		}
-
-		var read int
-		read, err = cli.tractservers.ReadInto(ctx, host, nil, reqID, tract.Tract, tract.Version, thisB, thisOffset)
-		if err == core.ErrVersionMismatch {
-			badVersionHost = host
+		res := readFunc(host, n, thisB)
+		if res.err != core.NoError && res.err != core.ErrEOF {
+			continue
 		}
-		if err != core.NoError && err != core.ErrEOF {
-			log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
-			// TODO(eric): redo bad TS reporting mechanism.
-			continue // try another host
-		}
-		log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
-		// In case of short read, i.e., read < len(thisB), we should
-		// pad the result with 0's. This doesn't need to be done
-		// explicitly if 'thisB' given to us starts to be empty.
-		// However, just in case it's not, we will ensure that by
-		// overwritting untouched bytes with 0's.
-		for i := read; i < len(thisB); i++ {
-			thisB[i] = 0
-		}
-		*result = tractResult{len(thisB), read, err, badVersionHost}
+		*result = res
 		return
 	}
 
