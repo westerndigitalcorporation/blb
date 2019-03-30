@@ -1183,24 +1183,23 @@ func (cli *Client) readOneTractReplicated(
 				}
 				return
 			}
-			resultCh <- readFunc(host, n)
+			select {
+			case <-cli.backupReadState.delayFunc(time.Duration(n) * delay):
+				resultCh <- readFunc(host, n)
+			case <-ctx.Done():
+				log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, n)
+				resultCh <- tractResultRepl{
+					tractResult: tractResult{0, 0, core.ErrCanceled, badVersionHost},
+				}
+			}
+
 		}
 
 		maxNumBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
 		nReaders := min(maxNumBackups+1, len(order))
 		nStart = nReaders - 1
 		for n := 0; n < nReaders; n++ {
-			go func(n int) {
-				select {
-				case <-cli.backupReadState.delayFunc(time.Duration(n) * delay):
-					readFuncBackup(n)
-				case <-ctx.Done():
-					log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, n)
-					resultCh <- tractResultRepl{
-						tractResult: tractResult{0, 0, core.ErrCanceled, badVersionHost},
-					}
-				}
-			}(n)
+			go readFuncBackup(n)
 		}
 
 		// Copy the first successful read data into thisB and continue to unblock resultCh.
