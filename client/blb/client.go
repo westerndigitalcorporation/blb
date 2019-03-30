@@ -1111,7 +1111,8 @@ func (cli *Client) readOneTract(
 	}
 }
 
-// tractResultRepl carries a tract result
+// tractResultRepl carries a tract result and a reference to a local
+// thisB.
 type tractResultRepl struct {
 	tractResult
 	thisB []byte
@@ -1187,6 +1188,7 @@ func (cli *Client) readOneTractReplicated(
 
 		maxNumBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
 		nReaders := min(maxNumBackups+1, len(order))
+		nStart = nReaders - 1
 		for n := 0; n < nReaders; n++ {
 			go func(n int) {
 				select {
@@ -1199,7 +1201,6 @@ func (cli *Client) readOneTractReplicated(
 					}
 				}
 			}(n)
-			nStart = n
 		}
 
 		// Copy the first successful read data into thisB and continue to unblock resultCh.
