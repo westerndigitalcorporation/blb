@@ -293,28 +293,40 @@ func TestWriteReadTracedExactlyOneTract(t *testing.T) {
 	trace.checkLength(t, 7)
 }
 
-func (cli *Client) setupBackupClient(maxNumBackups int, overrideDelay bool) chan<- time.Time {
+func (cli *Client) setupBackupClient(maxNumBackups int, overrideDelay bool) (chan<- time.Time, <-chan bool) {
 	behavior := BackupReadBehavior{
 		Enabled:       true,
 		MaxNumBackups: maxNumBackups,
 		Delay:         2 * time.Millisecond,
 	}
 	cli.backupReadState = makeBackupReadState(behavior)
+	bch := make(chan time.Time)
+	done := make(chan bool)
 	if overrideDelay {
-		bch := make(chan time.Time)
 		cli.backupReadState.delayFunc = func(_ time.Duration) <-chan time.Time {
 			// send a time value to this channel to unblock.
 			<-bch
 			return time.After(0 * time.Second)
 		}
-		return bch
+		readDone = func() {
+			done <- true
+		}
 	}
-	return nil
+	randOrder = func(n int) []int {
+		order := make([]int, n)
+		for i := 0; i < n; i++ {
+			order[i] = i
+		}
+		return order
+	}
+	return bch, done
 }
 
-func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
+// TestWriteReadTracedExactlyOneTractSimpleBackups checks if we can read a single tract
+// using 1 primary and 2 backup requests under no failures.
+func TestWriteReadTracedExactlyOneTractSimpleBackups(t *testing.T) {
 	cli, trace := newTracingClient()
-	bch := cli.setupBackupClient(2, true) // 2 backup requests
+	bch, done := cli.setupBackupClient(2, true) // 2 backup requests
 
 	// Write a blob and check the writes are logged.
 	blob := createBlob(t, cli)
@@ -339,13 +351,15 @@ func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
 		}
 	}()
 
-	// TODO(eric): The test was still racy after using the channel approach. If the first
-	// read completes, the other two are cancelled. Perhaps we need to mock the cancel func
-	// as well to disable cancellation?
+	// cancel is a noop just so we can be sure that all backups are sent.
+	cancelRead = func() {}
+
 	bch <- time.Time{}
 	bch <- time.Time{}
 	bch <- time.Time{}
-	time.Sleep(100 * time.Millisecond)
+
+	// wait for result loop to finish by calling readDone()
+	<-done
 
 	// Check that all three reads, 1 primary and 2 backup requests are logged.
 	tsIDs := []tsTraceEntry{
@@ -357,18 +371,72 @@ func TestWriteReadTracedExactlyOneTractWithBackups(t *testing.T) {
 	trace.checkLength(t, 9)
 }
 
+func TestReadOneTractBackups(t *testing.T) {
+	cli, trace := newTracingClient()
+	bch, done := cli.setupBackupClient(0, true) // 2 backup requests
+
+	// Write a blob and check the writes are logged.
+	blob := createBlob(t, cli)
+	blob.Seek(core.TractLength, os.SEEK_SET)
+	p1 := makeData(core.TractLength)
+	checkWrite(t, blob, p1)
+
+	trace.check(t, true, "ts-0000000100000001:0000-0", 1, 0, 0)
+	trace.check(t, true, "ts-0000000100000001:0000-1", 1, 0, 0)
+	trace.check(t, true, "ts-0000000100000001:0000-2", 1, 0, 0)
+	trace.check(t, true, "ts-0000000100000001:0001-0", 1, core.TractLength, 0)
+	trace.check(t, true, "ts-0000000100000001:0001-1", 1, core.TractLength, 0)
+	trace.check(t, true, "ts-0000000100000001:0001-2", 1, core.TractLength, 0)
+
+	// Test each request scenario by overriding backupRequestFunc
+	// Does the first request succeed before backup is sent work?
+	primaryDone := make(chan bool)
+	backupRequestFunc = func(
+		ctx context.Context,
+		cli *Client,
+		reqID string,
+		tract *core.TractInfo,
+		thisB []byte,
+		thisOffset int64,
+		nReaders int,
+		order []int) {
+
+		go cli.readOneTractBackupReplicated(ctx, reqID, tract, thisB, thisOffset, order, 0)
+		primaryDone <- true
+
+	}
+
+	go func() {
+		blob.Seek(core.TractLength, os.SEEK_SET)
+		p := make([]byte, core.TractLength)
+		n, err := blob.Read(p)
+		if err != nil || n != core.TractLength {
+			t.Fatal("error or short read", n, core.TractLength, err)
+		}
+	}()
+
+	// release fake sleep
+	bch <- time.Time{}
+
+	// wait for the first request to finish
+	<-primaryDone
+
+	// check the read is there.
+	trace.check(t, false, "ts-0000000100000001:0001-0", 1, core.TractLength, 0)
+
+	// check that we can exit
+	<-done
+}
+
 func TestReadFailoverWithBackups(t *testing.T) {
-	fail := func(e tsTraceEntry) core.Error {
+	_ = func(e tsTraceEntry) core.Error {
 		// Reads from the first two tractservers fail.
 		if !e.write && !strings.HasSuffix(e.addr, "2") {
 			return core.ErrRPC
 		}
 		return core.NoError
 	}
-
-	cli := newClient(fail)
-	_ = cli.setupBackupClient(2, false) // 1 backup requests
-	testWriteRead(t, createBlob(t, cli), 3*core.TractLength+8765, 2*core.TractLength+27)
+	// TODO test all backups fail and read uses the fallback path
 }
 
 func TestWriteFailSimple(t *testing.T) {

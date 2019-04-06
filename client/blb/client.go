@@ -1118,6 +1118,102 @@ type tractResultRepl struct {
 	thisB []byte
 }
 
+func (cli *Client) readOneTractWithResult(
+	ctx context.Context,
+	host string,
+	reqID string,
+	tract *core.TractInfo,
+	thisB []byte,
+	thisOffset int64) tractResultRepl {
+	var badVersionHost string
+	// TODO(eric): fill in otherHosts when ts-ts cancellation is done.
+	thisBLoc, err := cli.tractservers.Read(ctx, host, nil, reqID, tract.Tract, tract.Version, len(thisB), thisOffset)
+	if err == core.ErrVersionMismatch {
+		// TODO(eric): fix this check when we redo error reporting.
+		badVersionHost = host
+	}
+	if err != core.NoError && err != core.ErrEOF {
+		// TODO(eric): redo bad TS reporting mechanism.
+		return tractResultRepl{
+			tractResult: tractResult{0, 0, err, badVersionHost},
+		}
+	}
+	log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
+
+	return tractResultRepl{
+		tractResult: tractResult{len(thisB), len(thisBLoc), err, badVersionHost},
+		thisB:       thisBLoc,
+	}
+}
+
+// vars for test injection
+var (
+	randOrder         = getRandomOrder
+	backupRequestFunc = doParallelBackupReads
+	readDone          = func() {}
+	cancelRead        = func() {}
+
+	resultCh chan tractResultRepl
+)
+
+func (cli *Client) readOneTractBackupReplicated(
+	ctx context.Context,
+	reqID string,
+	tract *core.TractInfo,
+	thisB []byte,
+	thisOffset int64,
+	order []int,
+	n int) {
+	err := core.ErrAllocHost // default error if none present
+	var badVersionHost string
+	host := tract.Hosts[order[n]]
+	if host == "" {
+		log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
+		resultCh <- tractResultRepl{
+			tractResult: tractResult{0, 0, err, badVersionHost},
+		}
+		return
+	}
+	delay := cli.backupReadState.BackupReadBehavior.Delay
+	select {
+	case <-cli.backupReadState.delayFunc(time.Duration(n) * delay):
+		resultCh <- cli.readOneTractWithResult(ctx, host, reqID, tract, thisB, thisOffset)
+	case <-ctx.Done():
+		log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, n)
+		resultCh <- tractResultRepl{
+			tractResult: tractResult{0, 0, core.ErrCanceled, badVersionHost},
+		}
+	}
+	return
+}
+
+func doParallelBackupReads(
+	ctx context.Context,
+	cli *Client,
+	reqID string,
+	tract *core.TractInfo,
+	thisB []byte,
+	thisOffset int64,
+	nReaders int,
+	order []int) {
+	for n := 0; n < nReaders; n++ {
+		go cli.readOneTractBackupReplicated(ctx, reqID, tract, thisB, thisOffset, order, n)
+	}
+}
+
+func copyResult(thisB []byte, srcB []byte, result *tractResult, srcResult tractResult) {
+	copy(thisB, srcB)
+	// In case of short read, i.e., len(res.thisB) < len(thisB), we should
+	// pad thisB result with 0's. This doesn't need to be done
+	// explicitly if 'thisB' given to us starts to be empty.
+	// However, just in case it's not, we will ensure that by
+	// overwritting untouched bytes with 0's.
+	for i := len(srcB); i < len(thisB); i++ {
+		thisB[i] = 0
+	}
+	*result = srcResult
+}
+
 func (cli *Client) readOneTractReplicated(
 	ctx context.Context,
 	curAddr string,
@@ -1133,33 +1229,13 @@ func (cli *Client) readOneTractReplicated(
 	// to start sending reads to during the sequential read fallback phase.
 	var nStart int
 	reqID := core.GenRequestID()
-	order := rand.Perm(len(tract.Hosts))
+	order := randOrder(len(tract.Hosts))
 
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	cancelRead = cancel
+	defer cancelRead()
 
 	err := core.ErrAllocHost // default error if none present
-	readFunc := func(host string, n int) tractResultRepl {
-		// TODO(eric): fill in otherHosts when ts-ts cancellation is done.
-		thisBLoc, err := cli.tractservers.Read(ctx, host, nil, reqID, tract.Tract, tract.Version, len(thisB), thisOffset)
-		if err == core.ErrVersionMismatch {
-			// TODO(eric): fix this check when we redo error reporting.
-			badVersionHost = host
-		}
-		if err != core.NoError && err != core.ErrEOF {
-			// TODO(eric): redo bad TS reporting mechanism.
-			return tractResultRepl{
-				tractResult: tractResult{0, 0, err, badVersionHost},
-			}
-		}
-		log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
-
-		return tractResultRepl{
-			tractResult: tractResult{len(thisB), len(thisBLoc), err, badVersionHost},
-			thisB:       thisBLoc,
-		}
-	}
-
 	if cli.backupReadState.BackupReadBehavior.Enabled {
 		// Backup request logic:
 		// A single "level" of n reader goroutines will be spawned at the same time.
@@ -1171,58 +1247,24 @@ func (cli *Client) readOneTractReplicated(
 		// successful read, we copy the resulting bytes returned from the read operation into
 		// thisB passed in to this function. If all of the backup reads fail, we fallback to the
 		// a sequential phase starting at the nth host.
-		resultCh := make(chan tractResultRepl)
-		delay := cli.backupReadState.BackupReadBehavior.Delay
-
-		readFuncBackup := func(n int) {
-			host := tract.Hosts[n]
-			if host == "" {
-				log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
-				resultCh <- tractResultRepl{
-					tractResult: tractResult{0, 0, err, badVersionHost},
-				}
-				return
-			}
-			select {
-			case <-cli.backupReadState.delayFunc(time.Duration(n) * delay):
-				resultCh <- readFunc(host, n)
-			case <-ctx.Done():
-				log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, n)
-				resultCh <- tractResultRepl{
-					tractResult: tractResult{0, 0, core.ErrCanceled, badVersionHost},
-				}
-			}
-
-		}
-
 		maxNumBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
-		nReaders := min(maxNumBackups+1, len(order))
+		nReaders := min(maxNumBackups+1, len(tract.Hosts))
 		nStart = nReaders - 1
-		for n := 0; n < nReaders; n++ {
-			go readFuncBackup(n)
-		}
+		resultCh = make(chan tractResultRepl)
+		backupRequestFunc(ctx, cli, reqID, tract, thisB, thisOffset, nReaders, order)
 
 		// Copy the first successful read data into thisB and continue to unblock resultCh.
 		// Return early only if we have a valid read.
 		done := false
-		var res tractResultRepl
 		for n := 0; n < nReaders; n++ {
-			res = <-resultCh
-			if res.err == core.NoError {
-				cancel()
-				*result = res.tractResult
-				copy(thisB[:len(res.thisB)], res.thisB)
-				// In case of short read, i.e., len(res.thisB) < len(thisB), we should
-				// pad thisB result with 0's. This doesn't need to be done
-				// explicitly if 'thisB' given to us starts to be empty.
-				// However, just in case it's not, we will ensure that by
-				// overwritting untouched bytes with 0's.
-				for i := len(res.thisB); i < len(thisB); i++ {
-					thisB[i] = 0
-				}
+			res := <-resultCh
+			if res.tractResult.err == core.NoError && !done {
+				cancelRead()
+				copyResult(thisB, res.thisB, result, res.tractResult)
 				done = true
 			}
 		}
+		readDone()
 		if done {
 			return
 		}
@@ -1236,20 +1278,11 @@ func (cli *Client) readOneTractReplicated(
 			log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
 			continue
 		}
-		res := readFunc(host, n)
+		res := cli.readOneTractWithResult(ctx, host, reqID, tract, thisB, thisOffset)
 		if res.err != core.NoError && res.err != core.ErrEOF {
 			continue
 		}
-		*result = res.tractResult
-		copy(thisB[:len(res.thisB)], res.thisB)
-		// In case of short read, i.e., len(thisBLoc) < len(thisB), we should
-		// pad thisB result with 0's. This doesn't need to be done
-		// explicitly if 'thisB' given to us starts to be empty.
-		// However, just in case it's not, we will ensure that by
-		// overwritting untouched bytes with 0's.
-		for i := len(res.thisB); i < len(thisB); i++ {
-			thisB[i] = 0
-		}
+		copyResult(thisB, res.thisB, result, res.tractResult)
 		return
 	}
 	log.V(1).Infof("read %s all hosts failed", tract.Tract)
@@ -1325,7 +1358,7 @@ func (cli *Client) statTract(ctx context.Context, tract core.TractInfo) (int64, 
 		return int64(tract.RS.Length), core.NoError
 	}
 
-	order := rand.Perm(len(tract.Hosts))
+	order := randOrder(len(tract.Hosts))
 
 	err := core.ErrAllocHost // default error if none present
 	for _, n := range order {
@@ -1421,6 +1454,11 @@ func (cli *Client) getTracts(ctx context.Context, addr string, id core.BlobID, s
 		}
 	}
 	return
+}
+
+// getRandomOrder returns a slice of random ints on [0, n).
+func getRandomOrder(n int) []int {
+	return rand.Perm(n)
 }
 
 type blobIterator struct {
