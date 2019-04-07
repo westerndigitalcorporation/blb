@@ -1132,6 +1132,7 @@ func (cli *Client) readOneTractWithResult(
 		// TODO(eric): fix this check when we redo error reporting.
 		badVersionHost = host
 	}
+	readDone()
 	if err != core.NoError && err != core.ErrEOF {
 		// TODO(eric): redo bad TS reporting mechanism.
 		return tractResultRepl{
@@ -1150,10 +1151,8 @@ func (cli *Client) readOneTractWithResult(
 var (
 	randOrder         = getRandomOrder
 	backupRequestFunc = doParallelBackupReads
-	readDone          = func() {}
-	cancelRead        = func() {}
-
-	resultCh chan tractResultRepl
+	readDone          = func() {} // call when read/readAt rpcs return.
+	backupPhaseDone   = func() {} // call when the entire backup read phase is done.
 )
 
 func (cli *Client) readOneTractBackupReplicated(
@@ -1163,7 +1162,8 @@ func (cli *Client) readOneTractBackupReplicated(
 	thisB []byte,
 	thisOffset int64,
 	order []int,
-	n int) {
+	n int,
+	resultCh chan tractResultRepl) {
 	err := core.ErrAllocHost // default error if none present
 	var badVersionHost string
 	host := tract.Hosts[order[n]]
@@ -1176,13 +1176,13 @@ func (cli *Client) readOneTractBackupReplicated(
 	}
 	delay := cli.backupReadState.BackupReadBehavior.Delay
 	select {
-	case <-cli.backupReadState.delayFunc(time.Duration(n) * delay):
-		resultCh <- cli.readOneTractWithResult(ctx, host, reqID, tract, thisB, thisOffset)
 	case <-ctx.Done():
 		log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, n)
 		resultCh <- tractResultRepl{
 			tractResult: tractResult{0, 0, core.ErrCanceled, badVersionHost},
 		}
+	case <-cli.backupReadState.delayFunc(time.Duration(n) * delay):
+		resultCh <- cli.readOneTractWithResult(ctx, host, reqID, tract, thisB, thisOffset)
 	}
 	return
 }
@@ -1195,10 +1195,12 @@ func doParallelBackupReads(
 	thisB []byte,
 	thisOffset int64,
 	nReaders int,
-	order []int) {
+	order []int) <-chan tractResultRepl {
+	resultCh := make(chan tractResultRepl)
 	for n := 0; n < nReaders; n++ {
-		go cli.readOneTractBackupReplicated(ctx, reqID, tract, thisB, thisOffset, order, n)
+		go cli.readOneTractBackupReplicated(ctx, reqID, tract, thisB, thisOffset, order, n, resultCh)
 	}
+	return resultCh
 }
 
 func copyResult(thisB []byte, srcB []byte, result *tractResult, srcResult tractResult) {
@@ -1232,8 +1234,7 @@ func (cli *Client) readOneTractReplicated(
 	order := randOrder(len(tract.Hosts))
 
 	ctx, cancel := context.WithCancel(ctx)
-	cancelRead = cancel
-	defer cancelRead()
+	defer cancel()
 
 	err := core.ErrAllocHost // default error if none present
 	if cli.backupReadState.BackupReadBehavior.Enabled {
@@ -1250,8 +1251,9 @@ func (cli *Client) readOneTractReplicated(
 		maxNumBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
 		nReaders := min(maxNumBackups+1, len(tract.Hosts))
 		nStart = nReaders - 1
-		resultCh = make(chan tractResultRepl)
-		backupRequestFunc(ctx, cli, reqID, tract, thisB, thisOffset, nReaders, order)
+
+		// This function should not block.
+		resultCh := backupRequestFunc(ctx, cli, reqID, tract, thisB, thisOffset, nReaders, order)
 
 		// Copy the first successful read data into thisB and continue to unblock resultCh.
 		// Return early only if we have a valid read.
@@ -1259,12 +1261,12 @@ func (cli *Client) readOneTractReplicated(
 		for n := 0; n < nReaders; n++ {
 			res := <-resultCh
 			if res.tractResult.err == core.NoError && !done {
-				cancelRead()
+				cancel()
 				copyResult(thisB, res.thisB, result, res.tractResult)
 				done = true
 			}
 		}
-		readDone()
+		backupPhaseDone()
 		if done {
 			return
 		}
