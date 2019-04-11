@@ -1132,7 +1132,7 @@ func (cli *Client) readOneTractWithResult(
 		// TODO(eric): fix this check when we redo error reporting.
 		badVersionHost = host
 	}
-	readDone()
+	readDoneFunc()
 	if err != core.NoError && err != core.ErrEOF {
 		// TODO(eric): redo bad TS reporting mechanism.
 		return tractResultRepl{
@@ -1149,10 +1149,11 @@ func (cli *Client) readOneTractWithResult(
 
 // vars for test injection
 var (
-	randOrder         = getRandomOrder
-	backupRequestFunc = doParallelBackupReads
-	readDone          = func() {} // call when read/readAt rpcs return.
-	backupPhaseDone   = func() {} // call when the entire backup read phase is done.
+	randOrderFunc       = getRandomOrder
+	backupRequestFunc   = doParallelBackupReads
+	readDoneFunc        = func() {} // call when read/readAt rpcs return.
+	backupPhaseDoneFunc = func() {} // call when the entire backup read phase is done.
+	cancelDone          = func() {} // call when cancellation is complete.
 )
 
 func (cli *Client) readOneTractBackupReplicated(
@@ -1231,7 +1232,7 @@ func (cli *Client) readOneTractReplicated(
 	// to start sending reads to during the sequential read fallback phase.
 	var nStart int
 	reqID := core.GenRequestID()
-	order := randOrder(len(tract.Hosts))
+	order := randOrderFunc(len(tract.Hosts))
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1250,9 +1251,9 @@ func (cli *Client) readOneTractReplicated(
 		// a sequential phase starting at the nth host.
 		maxNumBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
 		nReaders := min(maxNumBackups+1, len(tract.Hosts))
-		nStart = nReaders - 1
+		nStart = nReaders
 
-		// This function should not block.
+		// This function call must not block.
 		resultCh := backupRequestFunc(ctx, cli, reqID, tract, thisB, thisOffset, nReaders, order)
 
 		// Copy the first successful read data into thisB and continue to unblock resultCh.
@@ -1262,11 +1263,12 @@ func (cli *Client) readOneTractReplicated(
 			res := <-resultCh
 			if res.tractResult.err == core.NoError && !done {
 				cancel()
+				cancelDone()
 				copyResult(thisB, res.thisB, result, res.tractResult)
 				done = true
 			}
 		}
-		backupPhaseDone()
+		backupPhaseDoneFunc()
 		if done {
 			return
 		}
@@ -1360,7 +1362,7 @@ func (cli *Client) statTract(ctx context.Context, tract core.TractInfo) (int64, 
 		return int64(tract.RS.Length), core.NoError
 	}
 
-	order := randOrder(len(tract.Hosts))
+	order := randOrderFunc(len(tract.Hosts))
 
 	err := core.ErrAllocHost // default error if none present
 	for _, n := range order {
