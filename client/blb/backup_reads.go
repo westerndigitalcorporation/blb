@@ -20,9 +20,6 @@ type BackupReadBehavior struct {
 
 type backupReadState struct {
 	BackupReadBehavior
-
-	// backupDelay is the delay before sending backup reads.
-	delayFunc func(time.Duration) <-chan time.Time
 }
 
 func makeBackupReadState(behavior BackupReadBehavior) backupReadState {
@@ -35,8 +32,5 @@ func makeBackupReadState(behavior BackupReadBehavior) backupReadState {
 		// MaxNumBackups isn't used in the read path if this is disabled, clear this.
 		behavior.MaxNumBackups = 0
 	}
-	return backupReadState{
-		BackupReadBehavior: behavior,
-		delayFunc:          time.After,
-	}
+	return backupReadState{BackupReadBehavior: behavior}
 }

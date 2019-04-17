@@ -121,6 +121,22 @@ type Client struct {
 	// Backup read behavior.
 	backupReadState backupReadState
 
+	// hooks for testing
+	// Enforces deterministic ordering for hosts.
+	randOrderFunc func(n int) []int
+
+	// Override the read spawining logic.
+	backupRequestFunc backupReqFunc
+
+	// Read rpc completes
+	readDoneHookFunc func()
+
+	// Signal that the backup phase is complete.
+	backupPhaseDoneHookFunc func()
+
+	// Allows waiting for cancellation to occur.
+	cancelDoneHookFunc func()
+
 	// Metrics we collect.
 	metricOpen           prometheus.Observer
 	metricCreate         prometheus.Observer
@@ -164,25 +180,30 @@ func newBaseClient(options *Options) *Client {
 	}
 
 	return &Client{
-		lookupCache:          lookupCacheNew(LookupCacheSize),
-		tractCache:           tractCacheNew(TractCacheSize),
-		cacheDisabled:        options.DisableCache,
-		cluster:              options.Cluster,
-		retrier:              retrier,
-		reconstructState:     makeReconstructState(options.ReconstructBehavior),
-		backupReadState:      makeBackupReadState(options.BackupReadBehavior),
-		metricOpen:           clientOpLatenciesSet.WithLabelValues("open", options.Instance),
-		metricCreate:         clientOpLatenciesSet.WithLabelValues("create", options.Instance),
-		metricReadDurations:  clientOpLatenciesSet.WithLabelValues("read", options.Instance),
-		metricWriteDurations: clientOpLatenciesSet.WithLabelValues("write", options.Instance),
-		metricDelete:         clientOpLatenciesSet.WithLabelValues("delete", options.Instance),
-		metricUndelete:       clientOpLatenciesSet.WithLabelValues("undelete", options.Instance),
-		metricReconDuration:  clientOpLatenciesSet.WithLabelValues("reconstruct", options.Instance),
-		metricReadSizes:      clientOpSizesSet.WithLabelValues("read", options.Instance),
-		metricWriteSizes:     clientOpSizesSet.WithLabelValues("write", options.Instance),
-		metricReadBytes:      clientOpBytesSet.WithLabelValues("read", options.Instance),
-		metricWriteBytes:     clientOpBytesSet.WithLabelValues("write", options.Instance),
-		metricReconBytes:     clientOpBytesSet.WithLabelValues("reconstruct", options.Instance),
+		lookupCache:             lookupCacheNew(LookupCacheSize),
+		tractCache:              tractCacheNew(TractCacheSize),
+		cacheDisabled:           options.DisableCache,
+		cluster:                 options.Cluster,
+		retrier:                 retrier,
+		reconstructState:        makeReconstructState(options.ReconstructBehavior),
+		backupReadState:         makeBackupReadState(options.BackupReadBehavior),
+		randOrderFunc:           rand.Perm,
+		backupRequestFunc:       doParallelBackupReads,
+		readDoneHookFunc:        func() {},
+		backupPhaseDoneHookFunc: func() {},
+		cancelDoneHookFunc:      func() {},
+		metricOpen:              clientOpLatenciesSet.WithLabelValues("open", options.Instance),
+		metricCreate:            clientOpLatenciesSet.WithLabelValues("create", options.Instance),
+		metricReadDurations:     clientOpLatenciesSet.WithLabelValues("read", options.Instance),
+		metricWriteDurations:    clientOpLatenciesSet.WithLabelValues("write", options.Instance),
+		metricDelete:            clientOpLatenciesSet.WithLabelValues("delete", options.Instance),
+		metricUndelete:          clientOpLatenciesSet.WithLabelValues("undelete", options.Instance),
+		metricReconDuration:     clientOpLatenciesSet.WithLabelValues("reconstruct", options.Instance),
+		metricReadSizes:         clientOpSizesSet.WithLabelValues("read", options.Instance),
+		metricWriteSizes:        clientOpSizesSet.WithLabelValues("write", options.Instance),
+		metricReadBytes:         clientOpBytesSet.WithLabelValues("read", options.Instance),
+		metricWriteBytes:        clientOpBytesSet.WithLabelValues("write", options.Instance),
+		metricReconBytes:        clientOpBytesSet.WithLabelValues("reconstruct", options.Instance),
 	}
 }
 
@@ -1123,16 +1144,16 @@ func (cli *Client) readOneTractWithResult(
 	host string,
 	reqID string,
 	tract *core.TractInfo,
-	thisB []byte,
+	lengthThisB int,
 	thisOffset int64) tractResultRepl {
 	var badVersionHost string
 	// TODO(eric): fill in otherHosts when ts-ts cancellation is done.
-	thisBLoc, err := cli.tractservers.Read(ctx, host, nil, reqID, tract.Tract, tract.Version, len(thisB), thisOffset)
+	thisBLoc, err := cli.tractservers.Read(ctx, host, nil, reqID, tract.Tract, tract.Version, lengthThisB, thisOffset)
+	defer cli.readDoneHookFunc()
 	if err == core.ErrVersionMismatch {
 		// TODO(eric): fix this check when we redo error reporting.
 		badVersionHost = host
 	}
-	readDoneFunc()
 	if err != core.NoError && err != core.ErrEOF {
 		// TODO(eric): redo bad TS reporting mechanism.
 		return tractResultRepl{
@@ -1142,19 +1163,14 @@ func (cli *Client) readOneTractWithResult(
 	log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
 
 	return tractResultRepl{
-		tractResult: tractResult{len(thisB), len(thisBLoc), err, badVersionHost},
+		tractResult: tractResult{lengthThisB, len(thisBLoc), err, badVersionHost},
 		thisB:       thisBLoc,
 	}
 }
 
-// vars for test injection
-var (
-	randOrderFunc       = getRandomOrder
-	backupRequestFunc   = doParallelBackupReads
-	readDoneFunc        = func() {} // call when read/readAt rpcs return.
-	backupPhaseDoneFunc = func() {} // call when the entire backup read phase is done.
-	cancelDone          = func() {} // call when cancellation is complete.
-)
+// backupRequestFunc is a function type for sending backup requests.
+type backupReqFunc func(ctx context.Context, cli *Client, reqID string, tract *core.TractInfo,
+	thisB []byte, thisOffset int64, nReaders int, order []int) <-chan tractResultRepl
 
 func (cli *Client) readOneTractBackupReplicated(
 	ctx context.Context,
@@ -1162,28 +1178,27 @@ func (cli *Client) readOneTractBackupReplicated(
 	tract *core.TractInfo,
 	thisB []byte,
 	thisOffset int64,
-	order []int,
-	n int,
-	resultCh chan tractResultRepl) {
+	delayTimer <-chan time.Time,
+	resultCh chan<- tractResultRepl,
+	nOrder int) {
 	err := core.ErrAllocHost // default error if none present
 	var badVersionHost string
-	host := tract.Hosts[order[n]]
+	host := tract.Hosts[nOrder]
 	if host == "" {
-		log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
+		log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[nOrder])
 		resultCh <- tractResultRepl{
 			tractResult: tractResult{0, 0, err, badVersionHost},
 		}
 		return
 	}
-	delay := cli.backupReadState.BackupReadBehavior.Delay
 	select {
 	case <-ctx.Done():
-		log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, n)
+		log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, nOrder)
 		resultCh <- tractResultRepl{
 			tractResult: tractResult{0, 0, core.ErrCanceled, badVersionHost},
 		}
-	case <-cli.backupReadState.delayFunc(time.Duration(n) * delay):
-		resultCh <- cli.readOneTractWithResult(ctx, host, reqID, tract, thisB, thisOffset)
+	case <-delayTimer:
+		resultCh <- cli.readOneTractWithResult(ctx, host, reqID, tract, len(thisB), thisOffset)
 	}
 	return
 }
@@ -1199,7 +1214,8 @@ func doParallelBackupReads(
 	order []int) <-chan tractResultRepl {
 	resultCh := make(chan tractResultRepl)
 	for n := 0; n < nReaders; n++ {
-		go cli.readOneTractBackupReplicated(ctx, reqID, tract, thisB, thisOffset, order, n, resultCh)
+		delayCh := time.After(time.Duration(n) * cli.backupReadState.BackupReadBehavior.Delay)
+		go cli.readOneTractBackupReplicated(ctx, reqID, tract, thisB, thisOffset, delayCh, resultCh, order[n])
 	}
 	return resultCh
 }
@@ -1232,7 +1248,7 @@ func (cli *Client) readOneTractReplicated(
 	// to start sending reads to during the sequential read fallback phase.
 	var nStart int
 	reqID := core.GenRequestID()
-	order := randOrderFunc(len(tract.Hosts))
+	order := cli.randOrderFunc(len(tract.Hosts))
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1253,8 +1269,8 @@ func (cli *Client) readOneTractReplicated(
 		nReaders := min(maxNumBackups+1, len(tract.Hosts))
 		nStart = nReaders
 
-		// This function call must not block.
-		resultCh := backupRequestFunc(ctx, cli, reqID, tract, thisB, thisOffset, nReaders, order)
+		// This function call should not block.
+		resultCh := cli.backupRequestFunc(ctx, cli, reqID, tract, thisB, thisOffset, nReaders, order)
 
 		// Copy the first successful read data into thisB and continue to unblock resultCh.
 		// Return early only if we have a valid read.
@@ -1263,12 +1279,12 @@ func (cli *Client) readOneTractReplicated(
 			res := <-resultCh
 			if res.tractResult.err == core.NoError && !done {
 				cancel()
-				cancelDone()
+				cli.cancelDoneHookFunc()
 				copyResult(thisB, res.thisB, result, res.tractResult)
 				done = true
 			}
 		}
-		backupPhaseDoneFunc()
+		cli.backupPhaseDoneHookFunc()
 		if done {
 			return
 		}
@@ -1282,7 +1298,7 @@ func (cli *Client) readOneTractReplicated(
 			log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
 			continue
 		}
-		res := cli.readOneTractWithResult(ctx, host, reqID, tract, thisB, thisOffset)
+		res := cli.readOneTractWithResult(ctx, host, reqID, tract, len(thisB), thisOffset)
 		if res.err != core.NoError && res.err != core.ErrEOF {
 			continue
 		}
@@ -1362,7 +1378,7 @@ func (cli *Client) statTract(ctx context.Context, tract core.TractInfo) (int64, 
 		return int64(tract.RS.Length), core.NoError
 	}
 
-	order := randOrderFunc(len(tract.Hosts))
+	order := cli.randOrderFunc(len(tract.Hosts))
 
 	err := core.ErrAllocHost // default error if none present
 	for _, n := range order {
@@ -1458,11 +1474,6 @@ func (cli *Client) getTracts(ctx context.Context, addr string, id core.BlobID, s
 		}
 	}
 	return
-}
-
-// getRandomOrder returns a slice of random ints on [0, n).
-func getRandomOrder(n int) []int {
-	return rand.Perm(n)
 }
 
 type blobIterator struct {
