@@ -81,6 +81,9 @@ type Options struct {
 
 	// How the client decides whether to attempt client-side RS reconstruction.
 	ReconstructBehavior ReconstructBehavior
+
+	// How the client decides to send backup reads if the primary read is delayed.
+	BackupReadBehavior BackupReadBehavior
 }
 
 // Client exposes a simple interface to Blb users for requesting services and
@@ -115,6 +118,24 @@ type Client struct {
 
 	// Reconstruct behavior.
 	reconstructState reconstructState
+	// Backup read behavior.
+	backupReadState backupReadState
+
+	// hooks for testing
+	// Enforces deterministic ordering for hosts.
+	randOrderFunc func(n int) []int
+
+	// Override the read spawining logic.
+	backupRequestFunc backupReqFunc
+
+	// Read rpc completes
+	readDoneHookFunc func()
+
+	// Signal that the backup phase is complete.
+	backupPhaseDoneHookFunc func()
+
+	// Allows waiting for cancellation to occur.
+	cancelDoneHookFunc func()
 
 	// Metrics we collect.
 	metricOpen           prometheus.Observer
@@ -159,24 +180,30 @@ func newBaseClient(options *Options) *Client {
 	}
 
 	return &Client{
-		lookupCache:          lookupCacheNew(LookupCacheSize),
-		tractCache:           tractCacheNew(TractCacheSize),
-		cacheDisabled:        options.DisableCache,
-		cluster:              options.Cluster,
-		retrier:              retrier,
-		reconstructState:     makeReconstructState(options.ReconstructBehavior),
-		metricOpen:           clientOpLatenciesSet.WithLabelValues("open", options.Instance),
-		metricCreate:         clientOpLatenciesSet.WithLabelValues("create", options.Instance),
-		metricReadDurations:  clientOpLatenciesSet.WithLabelValues("read", options.Instance),
-		metricWriteDurations: clientOpLatenciesSet.WithLabelValues("write", options.Instance),
-		metricDelete:         clientOpLatenciesSet.WithLabelValues("delete", options.Instance),
-		metricUndelete:       clientOpLatenciesSet.WithLabelValues("undelete", options.Instance),
-		metricReconDuration:  clientOpLatenciesSet.WithLabelValues("reconstruct", options.Instance),
-		metricReadSizes:      clientOpSizesSet.WithLabelValues("read", options.Instance),
-		metricWriteSizes:     clientOpSizesSet.WithLabelValues("write", options.Instance),
-		metricReadBytes:      clientOpBytesSet.WithLabelValues("read", options.Instance),
-		metricWriteBytes:     clientOpBytesSet.WithLabelValues("write", options.Instance),
-		metricReconBytes:     clientOpBytesSet.WithLabelValues("reconstruct", options.Instance),
+		lookupCache:             lookupCacheNew(LookupCacheSize),
+		tractCache:              tractCacheNew(TractCacheSize),
+		cacheDisabled:           options.DisableCache,
+		cluster:                 options.Cluster,
+		retrier:                 retrier,
+		reconstructState:        makeReconstructState(options.ReconstructBehavior),
+		backupReadState:         makeBackupReadState(options.BackupReadBehavior),
+		randOrderFunc:           rand.Perm,
+		backupRequestFunc:       doParallelBackupReads,
+		readDoneHookFunc:        func() {},
+		backupPhaseDoneHookFunc: func() {},
+		cancelDoneHookFunc:      func() {},
+		metricOpen:              clientOpLatenciesSet.WithLabelValues("open", options.Instance),
+		metricCreate:            clientOpLatenciesSet.WithLabelValues("create", options.Instance),
+		metricReadDurations:     clientOpLatenciesSet.WithLabelValues("read", options.Instance),
+		metricWriteDurations:    clientOpLatenciesSet.WithLabelValues("write", options.Instance),
+		metricDelete:            clientOpLatenciesSet.WithLabelValues("delete", options.Instance),
+		metricUndelete:          clientOpLatenciesSet.WithLabelValues("undelete", options.Instance),
+		metricReconDuration:     clientOpLatenciesSet.WithLabelValues("reconstruct", options.Instance),
+		metricReadSizes:         clientOpSizesSet.WithLabelValues("read", options.Instance),
+		metricWriteSizes:        clientOpSizesSet.WithLabelValues("write", options.Instance),
+		metricReadBytes:         clientOpBytesSet.WithLabelValues("read", options.Instance),
+		metricWriteBytes:        clientOpBytesSet.WithLabelValues("write", options.Instance),
+		metricReconBytes:        clientOpBytesSet.WithLabelValues("reconstruct", options.Instance),
 	}
 }
 
@@ -888,7 +915,8 @@ func (cli *Client) writeOneTract(
 	sem.Acquire()
 	defer sem.Release()
 
-	*result = cli.tractservers.Write(ctx, host, tract.Tract, tract.Version, thisB, thisOffset)
+	reqID := core.GenRequestID()
+	*result = cli.tractservers.Write(ctx, host, reqID, tract.Tract, tract.Version, thisB, thisOffset)
 
 	log.V(1).Infof("write %s to %s: %s", tract.Tract, host, *result)
 }
@@ -909,7 +937,8 @@ func (cli *Client) createOneTract(
 	sem.Acquire()
 	defer sem.Release()
 
-	*result = cli.tractservers.Create(ctx, host, tsid, tract.Tract, thisB, thisOffset)
+	reqID := core.GenRequestID()
+	*result = cli.tractservers.Create(ctx, host, reqID, tsid, tract.Tract, thisB, thisOffset)
 
 	log.V(1).Infof("create %s to %s: %s", tract.Tract, host, *result)
 }
@@ -1103,6 +1132,107 @@ func (cli *Client) readOneTract(
 	}
 }
 
+// tractResultRepl carries a tract result and a reference to a local
+// thisB.
+type tractResultRepl struct {
+	tractResult
+	thisB []byte
+}
+
+func (cli *Client) readOneTractWithResult(
+	ctx context.Context,
+	host string,
+	reqID string,
+	tract *core.TractInfo,
+	lengthThisB int,
+	thisOffset int64) tractResultRepl {
+	var badVersionHost string
+	// TODO(eric): fill in otherHosts when ts-ts cancellation is done.
+	thisBLoc, err := cli.tractservers.Read(ctx, host, nil, reqID, tract.Tract, tract.Version, lengthThisB, thisOffset)
+	defer cli.readDoneHookFunc()
+	if err == core.ErrVersionMismatch {
+		// TODO(eric): fix this check when we redo error reporting.
+		badVersionHost = host
+	}
+	if err != core.NoError && err != core.ErrEOF {
+		// TODO(eric): redo bad TS reporting mechanism.
+		return tractResultRepl{
+			tractResult: tractResult{0, 0, err, badVersionHost},
+		}
+	}
+	log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
+
+	return tractResultRepl{
+		tractResult: tractResult{lengthThisB, len(thisBLoc), err, badVersionHost},
+		thisB:       thisBLoc,
+	}
+}
+
+// backupRequestFunc is a function type for sending backup requests.
+type backupReqFunc func(ctx context.Context, cli *Client, reqID string, tract *core.TractInfo,
+	thisB []byte, thisOffset int64, nReaders int, order []int) <-chan tractResultRepl
+
+func (cli *Client) readOneTractBackupReplicated(
+	ctx context.Context,
+	reqID string,
+	tract *core.TractInfo,
+	thisB []byte,
+	thisOffset int64,
+	delayTimer <-chan time.Time,
+	resultCh chan<- tractResultRepl,
+	nOrder int) {
+	err := core.ErrAllocHost // default error if none present
+	var badVersionHost string
+	host := tract.Hosts[nOrder]
+	if host == "" {
+		log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[nOrder])
+		resultCh <- tractResultRepl{
+			tractResult: tractResult{0, 0, err, badVersionHost},
+		}
+		return
+	}
+	select {
+	case <-ctx.Done():
+		log.V(1).Infof("backup read %s-%d to tractserver cancelled", tract.Tract, nOrder)
+		resultCh <- tractResultRepl{
+			tractResult: tractResult{0, 0, core.ErrCanceled, badVersionHost},
+		}
+	case <-delayTimer:
+		resultCh <- cli.readOneTractWithResult(ctx, host, reqID, tract, len(thisB), thisOffset)
+	}
+	return
+}
+
+func doParallelBackupReads(
+	ctx context.Context,
+	cli *Client,
+	reqID string,
+	tract *core.TractInfo,
+	thisB []byte,
+	thisOffset int64,
+	nReaders int,
+	order []int) <-chan tractResultRepl {
+	resultCh := make(chan tractResultRepl)
+	for n := 0; n < nReaders; n++ {
+		delayCh := time.After(time.Duration(n) * cli.backupReadState.BackupReadBehavior.Delay)
+		go cli.readOneTractBackupReplicated(ctx, reqID, tract, thisB, thisOffset, delayCh, resultCh, order[n])
+	}
+	return resultCh
+}
+
+func copyResult(thisB []byte, srcB []byte, result *tractResult, srcResult tractResult) {
+	copy(thisB, srcB)
+	// In case of short read, i.e., len(res.thisB) < len(thisB), we should
+	// pad thisB result with 0's. This doesn't need to be done
+	// explicitly if 'thisB' given to us starts to be empty.
+	// However, just in case it's not, we will ensure that by
+	// overwritting untouched bytes with 0's.
+	for i := len(srcB); i < len(thisB); i++ {
+		thisB[i] = 0
+	}
+	*result = srcResult
+}
+
 func (cli *Client) readOneTractReplicated(
 	ctx context.Context,
 	curAddr string,
@@ -1111,46 +1241,70 @@ func (cli *Client) readOneTractReplicated(
 	thisB []byte,
 	thisOffset int64) {
 
+	// TODO(eric): remove this var when we redo bad ts version reporting
 	var badVersionHost string
 
-	order := rand.Perm(len(tract.Hosts))
+	// This counter tracks how many backups have been issued and is used to mark which hosts
+	// to start sending reads to during the sequential read fallback phase.
+	var nStart int
+	reqID := core.GenRequestID()
+	order := cli.randOrderFunc(len(tract.Hosts))
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	err := core.ErrAllocHost // default error if none present
-	for _, n := range order {
+	if cli.backupReadState.BackupReadBehavior.Enabled {
+		// Backup request logic:
+		// A single "level" of n reader goroutines will be spawned at the same time.
+		// Each reader does {sleep 0ms; read from host[order[0]]}, {sleep 2ms; read from host[order[1]},
+		// {sleep 4ms; read from host[order[2]} and so on. Each reader is guaranteed
+		// to write a result to the resultCh channel, no matter if the reader has been
+		// cancelled or not.  We then consume the same number of n messages since one message
+		// is produced per reader, scanning until we find a successful read. If we find a
+		// successful read, we copy the resulting bytes returned from the read operation into
+		// thisB passed in to this function. If all of the backup reads fail, we fallback to the
+		// a sequential phase starting at the nth host.
+		maxNumBackups := cli.backupReadState.BackupReadBehavior.MaxNumBackups
+		nReaders := min(maxNumBackups+1, len(tract.Hosts))
+		nStart = nReaders
+
+		// This function call should not block.
+		resultCh := cli.backupRequestFunc(ctx, cli, reqID, tract, thisB, thisOffset, nReaders, order)
+
+		// Copy the first successful read data into thisB and continue to unblock resultCh.
+		// Return early only if we have a valid read.
+		done := false
+		for n := 0; n < nReaders; n++ {
+			res := <-resultCh
+			if res.tractResult.err == core.NoError && !done {
+				cancel()
+				cli.cancelDoneHookFunc()
+				copyResult(thisB, res.thisB, result, res.tractResult)
+				done = true
+			}
+		}
+		cli.backupPhaseDoneHookFunc()
+		if done {
+			return
+		}
+	}
+
+	// Sequentially read from tract server replicas. This phase will run if backups are disabled from
+	// config state, or all of the backup reads issued return errors.
+	for _, n := range order[nStart:] {
 		host := tract.Hosts[n]
 		if host == "" {
 			log.V(1).Infof("read %s from tsid %d: no host", tract.Tract, tract.TSIDs[n])
 			continue
 		}
-
-		var read int
-		read, err = cli.tractservers.ReadInto(ctx, host, tract.Tract, tract.Version, thisB, thisOffset)
-		if err == core.ErrVersionMismatch {
-			badVersionHost = host
+		res := cli.readOneTractWithResult(ctx, host, reqID, tract, len(thisB), thisOffset)
+		if res.err != core.NoError && res.err != core.ErrEOF {
+			continue
 		}
-		if err != core.NoError && err != core.ErrEOF {
-			log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
-			// If we failed to read from a TS, report that to the curator. Defer so we can examine
-			// result.err at the end, to see if we succeeded on another or not.
-			defer func(host string, err core.Error) {
-				couldRecover := result.err == core.NoError || result.err == core.ErrEOF
-				go cli.curators.ReportBadTS(context.Background(), curAddr, tract.Tract, host, "read", err, couldRecover)
-			}(host, err)
-			continue // try another host
-		}
-		log.V(1).Infof("read %s from tractserver at address %s: %s", tract.Tract, host, err)
-		// In case of short read, i.e., read < len(thisB), we should
-		// pad the result with 0's. This doesn't need to be done
-		// explicitly if 'thisB' given to us starts to be empty.
-		// However, just in case it's not, we will ensure that by
-		// overwritting untouched bytes with 0's.
-		for i := read; i < len(thisB); i++ {
-			thisB[i] = 0
-		}
-		*result = tractResult{len(thisB), read, err, badVersionHost}
+		copyResult(thisB, res.thisB, result, res.tractResult)
 		return
 	}
-
 	log.V(1).Infof("read %s all hosts failed", tract.Tract)
 	*result = tractResult{0, 0, err, badVersionHost}
 }
@@ -1166,16 +1320,12 @@ func (cli *Client) readOneTractRS(
 	rsTract := tract.RS.Chunk.ToTractID()
 	length := min(len(thisB), int(tract.RS.Length))
 	offset := int64(tract.RS.Offset) + thisOffset
-	read, err := cli.tractservers.ReadInto(ctx, tract.RS.Host, rsTract, core.RSChunkVersion, thisB[:length], offset)
+	reqID := core.GenRequestID()
+	read, err := cli.tractservers.ReadInto(ctx, tract.RS.Host, nil, reqID, rsTract, core.RSChunkVersion, thisB[:length], offset)
 
 	if err != core.NoError && err != core.ErrEOF {
 		log.V(1).Infof("rs read %s from tractserver at address %s: %s", tract.Tract, tract.RS.Host, err)
-		// If we failed to read from a TS, report that to the curator. Defer so
-		// we can examine result.err at the end, to see if we recovered or not.
-		defer func(err core.Error) {
-			couldRecover := result.err == core.NoError || result.err == core.ErrEOF
-			go cli.curators.ReportBadTS(context.Background(), curAddr, rsTract, tract.RS.Host, "read", err, couldRecover)
-		}(err)
+		// TODO(eric): redo bad TS reporting mechanism.
 		if !cli.shouldReconstruct(tract) {
 			*result = tractResult{len(thisB), 0, err, ""}
 			return
@@ -1228,7 +1378,7 @@ func (cli *Client) statTract(ctx context.Context, tract core.TractInfo) (int64, 
 		return int64(tract.RS.Length), core.NoError
 	}
 
-	order := rand.Perm(len(tract.Hosts))
+	order := cli.randOrderFunc(len(tract.Hosts))
 
 	err := core.ErrAllocHost // default error if none present
 	for _, n := range order {

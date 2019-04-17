@@ -119,11 +119,13 @@ func (cli *Client) reconstructOneTract(
 	nctx, cancel := context.WithCancel(ctx)
 	for _, i := range requests {
 		go func(i int) {
+			// reqID allows ts-ts cancellation of reads.
+			reqID := core.GenRequestID()
 			rsTract := tract.RS.BaseChunk.Add(i).ToTractID()
 			p := piece{idx: i}
 			// Don't use ReadInto here, because that would require us to pre-allocate all the
 			// memory, instead of having rpc/gob allocate it for us when a response comes in.
-			p.res, p.err = cli.tractservers.Read(nctx, tract.RS.OtherHosts[i], rsTract, core.RSChunkVersion, length, offset)
+			p.res, p.err = cli.tractservers.Read(nctx, tract.RS.OtherHosts[i], nil, reqID, rsTract, core.RSChunkVersion, length, offset)
 			// length is already clipped to fall within the RS piece, so short
 			// reads are unexpected here. Treat them as an error.
 			if (p.err == core.NoError || p.err == core.ErrEOF) && len(p.res) != length {

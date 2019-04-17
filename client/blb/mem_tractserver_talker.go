@@ -5,8 +5,9 @@ package blb
 
 import (
 	"context"
-	"github.com/westerndigitalcorporation/blb/internal/core"
 	"sync"
+
+	"github.com/westerndigitalcorporation/blb/internal/core"
 )
 
 // A tsTraceEntry contains the args for a read or write on a tractserver (but
@@ -39,7 +40,7 @@ type memTractserverTalker struct {
 
 // Create creates a new tract on the tractserver and does a write to the newly
 // created tract.
-func (tt *memTractserverTalker) Create(ctx context.Context, addr string, tsid core.TractserverID, id core.TractID, b []byte, off int64) core.Error {
+func (tt *memTractserverTalker) Create(ctx context.Context, addr, reqID string, tsid core.TractserverID, id core.TractID, b []byte, off int64) core.Error {
 	tt.lock.Lock()
 	ts := tt.getTractserver(addr)
 	_, ok := ts.versions[id]
@@ -49,11 +50,11 @@ func (tt *memTractserverTalker) Create(ctx context.Context, addr string, tsid co
 	}
 	ts.versions[id] = 1
 	tt.lock.Unlock()
-	return tt.Write(context.Background(), addr, id, 1, b, off)
+	return tt.Write(context.Background(), addr, reqID, id, 1, b, off)
 }
 
 // Write writes the given data to a tract.
-func (tt *memTractserverTalker) Write(ctx context.Context, addr string, id core.TractID, version int, b []byte, off int64) core.Error {
+func (tt *memTractserverTalker) Write(ctx context.Context, addr, reqID string, id core.TractID, version int, b []byte, off int64) core.Error {
 	tt.lock.Lock()
 	if version < 0 {
 		return core.ErrBadVersion
@@ -86,7 +87,7 @@ func (tt *memTractserverTalker) Write(ctx context.Context, addr string, id core.
 }
 
 // Read reads from a given tract.
-func (tt *memTractserverTalker) Read(ctx context.Context, addr string, id core.TractID, version int, length int, off int64) ([]byte, core.Error) {
+func (tt *memTractserverTalker) Read(ctx context.Context, addr string, otherHosts []string, reqID string, id core.TractID, version int, length int, off int64) ([]byte, core.Error) {
 	if version < 0 {
 		return nil, core.ErrBadVersion
 	}
@@ -123,8 +124,8 @@ func copySlice(b []byte) []byte {
 }
 
 // ReadInto reads from a given tract.
-func (tt *memTractserverTalker) ReadInto(ctx context.Context, addr string, id core.TractID, version int, b []byte, off int64) (int, core.Error) {
-	r, err := tt.Read(ctx, addr, id, version, len(b), off)
+func (tt *memTractserverTalker) ReadInto(ctx context.Context, addr string, otherHosts []string, reqID string, id core.TractID, version int, b []byte, off int64) (int, core.Error) {
+	r, err := tt.Read(ctx, addr, otherHosts, reqID, id, version, len(b), off)
 	return copy(b, r), err
 }
 
